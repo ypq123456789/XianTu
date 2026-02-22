@@ -591,7 +591,7 @@ export const useCharacterStore = defineStore('characterV3', () => {
   const createNewCharacter = async (payload: CreationPayload): Promise<CharacterBaseInfo | undefined> => {
     const uiStore = useUIStore();
     const creationStore = useCharacterCreationStore(); // 导入创角状态
-    let { charId, baseInfo, world, mode, age } = payload;
+    const { charId, baseInfo, world, mode, age } = payload;
 
     // 如果 ID 已存在，自动生成新 ID（避免因时间戳冲突导致创建失败）
     if (rootState.value.角色列表[charId]) {
