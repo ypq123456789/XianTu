@@ -1,5 +1,31 @@
 <template>
   <div class="game-map-panel">
+    <!-- 区域地图覆盖层 -->
+    <RegionMapPanel
+      v-if="activeRegionMap"
+      :regionMap="activeRegionMap"
+      @close="activeRegionMap = null"
+    />
+
+    <!-- 未收录地点：右上角 Badge 按钮 -->
+    <button
+      v-if="unmappedNpcs.length > 0 && !activeRegionMap"
+      class="unmapped-badge-btn"
+      :class="{ active: showUnmappedPanel }"
+      @click="showUnmappedPanel = !showUnmappedPanel"
+      :title="`${unmappedNpcs.length} 个 NPC 在未收录地点`"
+    >
+      ⚠️ {{ unmappedNpcs.length }}
+    </button>
+
+    <!-- 未收录地点面板 -->
+    <UnmappedLocationsPanel
+      :show="showUnmappedPanel"
+      :npcs="unmappedNpcs"
+      @close="showUnmappedPanel = false"
+      @location-added="handleLocationAdded"
+    />
+
     <!-- 世界信息头部 -->
     <div v-if="worldBackground" class="world-info-header">
       <div class="world-name">{{ worldName }}</div>
@@ -74,6 +100,16 @@
         <div v-if="selectedLocation.controlled_by" class="location-detail">
           <strong>控制势力：</strong>{{ selectedLocation.controlled_by }}
         </div>
+        <!-- 进入区域地图 -->
+        <button
+          class="enter-region-btn"
+          :class="{ loading: isLoadingRegion }"
+          @click="enterRegionMap(selectedLocation)"
+          :disabled="isLoadingRegion"
+        >
+          <span v-if="!isLoadingRegion">🗺️ 进入区域地图</span>
+          <span v-else>⏳ 生成中...</span>
+        </button>
       </div>
     </div>
 
@@ -299,6 +335,11 @@ import { isTavernEnv } from '@/utils/tavern';
 import type { WorldLocation } from '@/types/location';
 import type { GameCoordinates } from '@/types/gameMap';
 import type { NpcProfile, GameTime } from '@/types/game';
+import type { RegionMap } from '@/types/gameMap';
+import RegionMapPanel from './RegionMapPanel.vue';
+import { generateRegionMap } from '@/utils/worldGeneration/regionMapGenerator';
+import UnmappedLocationsPanel from './UnmappedLocationsPanel.vue';
+import type { UnmappedNpc } from './UnmappedLocationsPanel.vue';
 
 // Props
 const props = defineProps<{
@@ -335,6 +376,122 @@ const generateOptions = ref({
 // 地图密度配置
 type MapDensity = 'sparse' | 'normal' | 'dense';
 const mapDensity = ref<MapDensity>('normal');
+
+// ─── 区域地图状态 ─────────────────────────────────────────────────────────────
+const activeRegionMap = ref<RegionMap | null>(null);
+const isLoadingRegion = ref(false);
+
+// ─── 未收录地点状态 ────────────────────────────────────────────────────────────
+const showUnmappedPanel = ref(false);
+
+/**
+ * 计算所有位于「地图未收录地点」的 NPC。
+ * 条件：NPC 有位置描述，但描述中的地点（及其上级）都无法精确匹配 worldInfo.地点信息，
+ * 只能 fallback 到大陆层级。
+ */
+const unmappedNpcs = computed((): UnmappedNpc[] => {
+  const relationships = gameStateStore.relationships;
+  if (!relationships) return [];
+
+  const worldInfo = gameStateStore.worldInfo as any;
+  const locations: any[] = worldInfo?.地点信息 ?? [];
+  const continents: any[] = worldInfo?.大陆信息 ?? [];
+
+  const result: UnmappedNpc[] = [];
+
+  for (const [npcName, npcData] of Object.entries(relationships)) {
+    const raw = (npcData as any)?.['当前位置'] || (npcData as any)?.['位置'];
+    if (!raw || typeof raw !== 'object') continue;
+
+    const desc: string = (raw as any)['描述'] || (raw as any).description || '';
+    if (!desc) continue;
+
+    const parts = desc.split('·').map((s: string) => s.trim()).filter(Boolean);
+    // 必须至少有 字段1(大陆)·字段2(地点) 两段
+    if (parts.length < 2) continue;
+
+    // 字段2 = parts[1]（世界地图地点，如七玄山脉、青云门）
+    const field2 = parts[1];
+    // 字段3 = parts[2]（区域内建筑，如青石村、沧浪集），可能不存在
+    const field3 = parts.length >= 3 ? parts[2] : undefined;
+
+    // 检查字段2是否已精确匹配到地点信息（已收录则跳过）
+    const hasExactMatch = !!locations.find(
+      (loc: any) => loc.名称 === field2 || loc.name === field2
+    );
+    if (hasExactMatch) continue; // 字段2已在地图上，不需要添加
+
+    // 匹配大陆（字段1 = parts[0]）
+    const field1 = parts[0];
+    const matchedContinent = continents.find(
+      (c: any) => c.名称 === field1 || c.name === field1
+    );
+    if (!matchedContinent) continue; // 大陆都找不到，跳过
+
+    const continentName: string = matchedContinent.名称 || matchedContinent.name || '';
+    const bounds: { x: number; y: number }[] =
+      matchedContinent.大洲边界 ?? matchedContinent.continent_bounds ?? [];
+
+    result.push({
+      npcName,
+      locationDesc: desc,
+      locationHint: field2,   // 世界地图要添加的是字段2
+      buildingHint: field3,   // 字段3 仅用于面板展示（区域内建筑）
+      continentName,
+      continentBounds: bounds,
+      npcData: npcData as any,
+    });
+  }
+
+  return result;
+});
+
+/** 添加地点成功后，触发 NPC 位置重渲染 */
+function handleLocationAdded(_locationName: string) {
+  // worldInfo 响应式变化会自动触发 NPC watch 重新渲染
+  toast.success(`已将「${_locationName}」添加到世界地图`);
+}
+
+
+/**
+ * 点击地点弹窗"进入区域地图"按钮
+ * 1. 优先使用缓存；2. 没有则 AI 生成；3. 保存并显示
+ */
+async function enterRegionMap(location: WorldLocation) {
+  const locationName = location.name || (location as any).名称;
+  if (!locationName) return;
+
+  // 已有缓存，直接显示
+  const cached = gameStateStore.getRegionMap(locationName);
+  if (cached) {
+    activeRegionMap.value = cached;
+    closePopup();
+    return;
+  }
+
+  // AI 生成
+  isLoadingRegion.value = true;
+  try {
+    const result = await generateRegionMap({
+      locationName,
+      locationType: (location as any).type || (location as any).类型 || '',
+      locationDesc: location.description || (location as any).描述 || '',
+    });
+
+    if (result.success && result.regionMap) {
+      gameStateStore.saveRegionMap(result.regionMap);
+      activeRegionMap.value = result.regionMap;
+      closePopup();
+    } else {
+      console.error('[区域地图] 生成失败', result.errors);
+      alert('区域地图生成失败：' + (result.errors?.join(', ') || '未知错误'));
+    }
+  } catch (e) {
+    console.error('[区域地图] 异常', e);
+  } finally {
+    isLoadingRegion.value = false;
+  }
+}
 const densityOptions: { value: MapDensity; label: string; desc: string }[] = [
   { value: 'sparse', label: '稀疏', desc: '势力3-4个，地点6-8个' },
   { value: 'normal', label: '正常', desc: '势力5-8个，地点12-16个' },
@@ -373,25 +530,77 @@ const resolveNumber = (value: unknown): number | null => {
 };
 
 const resolveNpcCoordinates = (npcName: string, npcData: any): GameCoordinates | null => {
-  const raw = npcData?.['\u5F53\u524D\u4F4D\u7F6E'] || npcData?.['\u4F4D\u7F6E'] || npcData?.coordinates;
+  const raw = npcData?.['当前位置'] || npcData?.['位置'] || npcData?.coordinates;
   if (!raw || typeof raw !== 'object') return null;
 
   const rawAny = raw as any;
-  let x = resolveNumber(rawAny.x ?? rawAny['\u5750\u6807']?.x ?? rawAny.coordinates?.x) ?? NaN;
-  let y = resolveNumber(rawAny.y ?? rawAny['\u5750\u6807']?.y ?? rawAny.coordinates?.y) ?? NaN;
+  const desc: string = rawAny['描述'] || rawAny.description || '';
 
-  if (!Number.isFinite(x) || !Number.isFinite(y)) {
-    const mapConfig = mapRenderConfig.value;
-    const desc = rawAny['\u63CF\u8FF0'] || rawAny.description || npcName || 'NPC';
-    const seed = `${npcName}|${desc}`;
-    const hash = seed.split('').reduce((a: number, c: string) => a + c.charCodeAt(0), 0);
-    x = mapConfig.width * 0.3 + (hash % 100) * (mapConfig.width * 0.004);
-    y = mapConfig.height * 0.3 + ((hash * 7) % 100) * (mapConfig.height * 0.004);
+  // ── 优先级 1：从描述中提取地点名，匹配世界地图已知地点坐标 ────────────
+  // 描述格式：大陆·灵境·地点名（从后往前依次尝试，找最精确的）
+  if (desc) {
+    const worldInfo = gameStateStore.worldInfo;
+    const locations: any[] = worldInfo?.地点信息 ?? [];
+    const parts = desc.split('·').map((s: string) => s.trim()).filter(Boolean);
+
+    for (let i = parts.length - 1; i >= 0; i--) {
+      const hint = parts[i];
+      const matched = locations.find(
+        (loc: any) => loc.名称 === hint || loc.name === hint
+      );
+      if (matched) {
+        const lx = resolveNumber(matched.坐标?.x ?? matched.x ?? matched.coordinates?.x);
+        const ly = resolveNumber(matched.坐标?.y ?? matched.y ?? matched.coordinates?.y);
+        if (Number.isFinite(lx) && Number.isFinite(ly)) {
+          return { x: lx!, y: ly! };
+        }
+      }
+    }
+
+    // 有描述但地点信息里没匹配到 → 继续尝试匹配大陆（兜底到大陆层级）
+    const continents: any[] = worldInfo?.大陆信息 ?? [];
+    for (let i = 0; i < parts.length; i++) {
+      const hint = parts[i];
+      const matchedContinent = continents.find(
+        (c: any) => c.名称 === hint || c.name === hint
+      );
+      if (matchedContinent) {
+        // 用大陆边界多边形的重心作为坐标
+        const bounds: { x: number; y: number }[] =
+          matchedContinent.大洲边界 ?? matchedContinent.continent_bounds ?? [];
+        if (bounds.length > 0) {
+          const cx = bounds.reduce((s: number, p: any) => s + (p.x ?? 0), 0) / bounds.length;
+          const cy = bounds.reduce((s: number, p: any) => s + (p.y ?? 0), 0) / bounds.length;
+          if (Number.isFinite(cx) && Number.isFinite(cy)) {
+            return { x: cx, y: cy };
+          }
+        }
+      }
+    }
+
+    // 描述里所有层级都匹配不到，不显示（避免乱放）
+    return null;
   }
 
-  if (!Number.isFinite(x) || !Number.isFinite(y)) return null;
-  return { x, y };
+  // ── 优先级 2：无描述时，直接用 NPC 自身 x/y ─────────────────────────
+  const x = resolveNumber(rawAny.x ?? rawAny['坐标']?.x ?? rawAny.coordinates?.x) ?? NaN;
+  const y = resolveNumber(rawAny.y ?? rawAny['坐标']?.y ?? rawAny.coordinates?.y) ?? NaN;
+
+  if (Number.isFinite(x) && Number.isFinite(y)) {
+    return { x, y };
+  }
+
+  // ── 优先级 3：hash 伪随机兜底（完全无位置信息） ───────────────────────
+  const mapConfig = mapRenderConfig.value;
+  const seed = `${npcName}`;
+  const hash = seed.split('').reduce((a: number, c: string) => a + c.charCodeAt(0), 0);
+  const hx = mapConfig.width * 0.3 + (hash % 100) * (mapConfig.width * 0.004);
+  const hy = mapConfig.height * 0.3 + ((hash * 7) % 100) * (mapConfig.height * 0.004);
+
+  if (!Number.isFinite(hx) || !Number.isFinite(hy)) return null;
+  return { x: hx, y: hy };
 };
+
 
 // 检查地图是否有内容 (地点或势力)
 const hasMapContent = computed(() => {
@@ -1282,6 +1491,36 @@ const handleFullscreenChange = () => {
   white-space: nowrap;
 }
 
+/* ─── 未收录地点 Badge 按钮 ──────────────────────────────────────────────────── */
+.unmapped-badge-btn {
+  position: absolute;
+  top: 12px;
+  right: 12px;
+  z-index: 200;
+  padding: 5px 12px;
+  background: rgba(255, 160, 40, 0.15);
+  border: 1px solid rgba(255, 160, 40, 0.45);
+  border-radius: 20px;
+  color: rgba(255, 200, 80, 0.95);
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 0.2s, border-color 0.2s, transform 0.1s;
+  backdrop-filter: blur(8px);
+  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.3);
+  white-space: nowrap;
+}
+.unmapped-badge-btn:hover {
+  background: rgba(255, 160, 40, 0.28);
+  border-color: rgba(255, 160, 40, 0.7);
+  transform: scale(1.03);
+}
+.unmapped-badge-btn.active {
+  background: rgba(255, 160, 40, 0.25);
+  border-color: rgba(255, 200, 80, 0.7);
+  box-shadow: 0 0 14px rgba(255, 160, 40, 0.3);
+}
+
 /* 地图容器 */
 .map-container {
   flex: 1;
@@ -1359,6 +1598,32 @@ canvas:active {
   line-height: 1.6;
   max-height: 60vh;
   overflow-y: auto;
+}
+
+/* 进入区域地图按钮 */
+.enter-region-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  margin-top: 10px;
+  padding: 7px 12px;
+  background: rgba(100, 200, 255, 0.12);
+  border: 1px solid rgba(100, 200, 255, 0.35);
+  border-radius: 6px;
+  color: rgba(100, 200, 255, 0.9);
+  font-size: 13px;
+  cursor: pointer;
+  transition: background 0.2s, border-color 0.2s;
+}
+.enter-region-btn:hover:not(:disabled) {
+  background: rgba(100, 200, 255, 0.22);
+  border-color: rgba(100, 200, 255, 0.6);
+}
+.enter-region-btn:disabled,
+.enter-region-btn.loading {
+  opacity: 0.6;
+  cursor: not-allowed;
 }
 
 .location-type {
