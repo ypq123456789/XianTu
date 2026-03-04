@@ -84,28 +84,15 @@
             <span class="narrative-time">{{ currentNarrative.time }}</span>
             <div class="meta-buttons">
               <!-- 快照回退按钮 -->
-              <div v-if="snapshots.length > 0" class="rollback-group">
-                <button
-                  @click="showSnapshotMenu = !showSnapshotMenu"
-                  class="header-action-btn snapshot-btn"
-                  :title="t('回退到历史快照')"
-                >
-                  <History :size="20" />
-                  <span class="snapshot-count">{{ snapshots.length }}</span>
-                </button>
-                <!-- 快照菜单 -->
-                <div v-if="showSnapshotMenu" class="snapshot-menu">
-                  <div
-                    v-for="snap in snapshots"
-                    :key="snap.id"
-                    @click="rollbackToSnapshot(snap.id)"
-                    class="snapshot-item"
-                  >
-                    <span class="snapshot-label">{{ snap.label }}</span>
-                    <span class="snapshot-time">{{ formatSnapshotTime(snap.timestamp) }}</span>
-                  </div>
-                </div>
-              </div>
+              <button
+                v-if="snapshots.length > 0"
+                @click="rollbackToLastSnapshot"
+                class="header-action-btn snapshot-btn"
+                :title="t('回退到上一条对话')"
+              >
+                <History :size="20" />
+                <span class="snapshot-count">{{ snapshots.length }}</span>
+              </button>
 
               <button
                 @click="openEventsPanel"
@@ -985,6 +972,13 @@ const rollbackToSnapshot = async (snapshotId: string) => {
     },
     onCancel: () => {}
   });
+};
+
+// 回退到最后一条快照
+const rollbackToLastSnapshot = async () => {
+  if (snapshots.value.length === 0) return;
+  const lastSnapshot = snapshots.value[snapshots.value.length - 1];
+  await rollbackToSnapshot(lastSnapshot.id);
 };
 
 
