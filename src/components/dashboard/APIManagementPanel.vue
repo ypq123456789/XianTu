@@ -20,7 +20,7 @@
         </button>
         <button class="action-btn primary" @click="showAddDialog = true">
           <Plus :size="16" />
-          <span class="btn-text">{{ t('新增API') }}</span>
+          <span class="btn-text">{{ t('新增') }}</span>
         </button>
       </div>
     </div>
@@ -543,7 +543,7 @@
                 type="number"
                 class="form-input"
                 min="100"
-                max="128000"
+                :max="getProviderMaxOutputTokens(editingAPI.provider || 'openai')"
               />
             </div>
           </div>
@@ -797,12 +797,21 @@ const getProviderPresetModel = (provider: APIProvider): string => {
   return API_PROVIDER_PRESETS[provider]?.defaultModel || 'gpt-4o';
 };
 
+const getProviderPresetMaxTokens = (provider: APIProvider): number => {
+  return API_PROVIDER_PRESETS[provider]?.defaultMaxTokens || 16000;
+};
+
+const getProviderMaxOutputTokens = (provider: APIProvider): number => {
+  return API_PROVIDER_PRESETS[provider]?.maxOutputTokens || 384000;
+};
+
 // 当提供商变化时更新默认值
 const onProviderChange = () => {
   const preset = API_PROVIDER_PRESETS[editingAPI.value.provider as APIProvider];
   if (preset) {
     editingAPI.value.url = preset.url;
     editingAPI.value.model = preset.defaultModel;
+    editingAPI.value.maxTokens = preset.defaultMaxTokens || 16000;
   }
 };
 
@@ -1031,7 +1040,7 @@ const saveAPI = () => {
       apiKey: editingAPI.value.apiKey || '',
       model: editingAPI.value.model || getProviderPresetModel(editingAPI.value.provider as APIProvider),
       temperature: editingAPI.value.temperature || 0.7,
-      maxTokens: editingAPI.value.maxTokens || 16000,
+      maxTokens: editingAPI.value.maxTokens || getProviderPresetMaxTokens(editingAPI.value.provider as APIProvider),
       enabled: true,
       forceJsonOutput: editingAPI.value.forceJsonOutput || false
     };
@@ -1092,7 +1101,7 @@ const closeDialogs = () => {
     apiKey: '',
     model: 'gpt-4o',
     temperature: 0.7,
-    maxTokens: 16000,
+    maxTokens: getProviderPresetMaxTokens('openai'),
     enabled: true
   };
   availableModels.value = [];
@@ -1189,13 +1198,22 @@ const handleImport = () => {
 .header-actions {
   display: flex;
   gap: 0.5rem;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  min-width: 0;
 }
 
 .action-btn {
   display: flex;
   align-items: center;
+  justify-content: center;
   gap: 0.5rem;
   padding: 0.5rem 1rem;
+  width: auto !important;
+  height: auto !important;
+  min-width: 0;
+  min-height: 38px;
+  max-width: 100%;
   border: 1px solid var(--color-border);
   border-radius: 0.5rem;
   background: var(--color-surface);
@@ -1203,15 +1221,22 @@ const handleImport = () => {
   cursor: pointer;
   transition: all 0.2s ease;
   font-size: 0.875rem;
+  line-height: 1.2;
+  white-space: normal;
+  overflow-wrap: anywhere;
 }
 
 /* 修复按钮文字被全局样式覆盖的问题 */
 .action-btn .btn-text {
-  display: inline;
-  width: auto;
-  text-align: left;
+  display: inline-block;
+  min-width: 0;
+  max-width: 100%;
+  text-align: center;
   font-size: inherit;
+  line-height: 1.2;
   color: inherit;
+  overflow-wrap: anywhere;
+  white-space: normal;
 }
 
 .action-btn:hover {

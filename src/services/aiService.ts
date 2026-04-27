@@ -35,15 +35,24 @@ export interface AIConfig {
 }
 
 // API提供商预设配置
-export const API_PROVIDER_PRESETS: Record<APIProvider, { url: string; defaultModel: string; name: string }> = {
-  openai: { url: 'https://api.openai.com', defaultModel: 'gpt-4o', name: 'OpenAI' },
-  claude: { url: 'https://api.anthropic.com', defaultModel: 'claude-sonnet-4-20250514', name: 'Claude' },
-  gemini: { url: 'https://generativelanguage.googleapis.com', defaultModel: 'gemini-2.0-flash', name: 'Gemini' },
-  deepseek: { url: 'https://api.deepseek.com', defaultModel: 'deepseek-chat', name: 'DeepSeek' },
-  zhipu: { url: 'https://open.bigmodel.cn', defaultModel: 'glm-4-flash', name: '智谱AI' },
+export const API_PROVIDER_PRESETS: Record<APIProvider, {
+  url: string;
+  defaultModel: string;
+  name: string;
+  defaultMaxTokens?: number;
+  maxOutputTokens?: number;
+}> = {
+  openai: { url: 'https://api.openai.com', defaultModel: 'gpt-4o', name: 'OpenAI', defaultMaxTokens: 16000, maxOutputTokens: 128000 },
+  claude: { url: 'https://api.anthropic.com', defaultModel: 'claude-sonnet-4-20250514', name: 'Claude', defaultMaxTokens: 16000, maxOutputTokens: 64000 },
+  gemini: { url: 'https://generativelanguage.googleapis.com', defaultModel: 'gemini-2.0-flash', name: 'Gemini', defaultMaxTokens: 16000, maxOutputTokens: 65536 },
+  deepseek: { url: 'https://api.deepseek.com', defaultModel: 'deepseek-v4-flash', name: 'DeepSeek', defaultMaxTokens: 64000, maxOutputTokens: 384000 },
+  zhipu: { url: 'https://open.bigmodel.cn', defaultModel: 'glm-4-flash', name: '智谱AI', defaultMaxTokens: 16000, maxOutputTokens: 128000 },
   'siliconflow-embedding': { url: 'https://api.siliconflow.cn', defaultModel: 'BAAI/bge-m3', name: '硅基流动(Embedding)' },
-  custom: { url: '', defaultModel: '', name: '自定义(OpenAI兼容)' }
+  custom: { url: '', defaultModel: '', name: '自定义(OpenAI兼容)', defaultMaxTokens: 16000, maxOutputTokens: 384000 }
 };
+
+const DEEPSEEK_V4_CONTEXT_WINDOW = 1_000_000;
+const DEEPSEEK_V4_MAX_OUTPUT_TOKENS = 384_000;
 
 export interface AIMessage {
   role: 'system' | 'user' | 'assistant';
@@ -86,7 +95,7 @@ class AIService {
       apiKey: '',
       model: 'gpt-4o',
       temperature: 0.7,
-      maxTokens: 8192  // 输出token上限，使用8192兼容DeepSeek等API
+      maxTokens: 16000
     }
   };
 
@@ -446,6 +455,8 @@ class AIService {
     // DeepSeek预设模型
     if (provider === 'deepseek' || baseUrl.includes('deepseek.com')) {
       return [
+        'deepseek-v4-flash',
+        'deepseek-v4-pro',
         'deepseek-chat',
         'deepseek-reasoner'
       ];
@@ -466,7 +477,7 @@ class AIService {
       'gpt-4o',
       'gpt-4o-mini',
       'gpt-3.5-turbo',
-      'deepseek-chat'
+      'deepseek-v4-flash'
     ];
   }
 
@@ -676,7 +687,7 @@ class AIService {
         apiKey: apiConfig.apiKey,
         model: apiConfig.model,
         temperature: apiConfig.temperature ?? 0.7,
-        maxTokens: apiConfig.maxTokens ?? 8192  // 使用8192兼容DeepSeek等API
+        maxTokens: apiConfig.maxTokens ?? 16000
       };
 
       // 强制使用custom模式
@@ -718,7 +729,7 @@ class AIService {
         apiKey: apiConfig.apiKey,
         model: apiConfig.model,
         temperature: apiConfig.temperature ?? 0.7,
-        maxTokens: apiConfig.maxTokens ?? 8192  // 使用8192兼容DeepSeek等API
+        maxTokens: apiConfig.maxTokens ?? 16000
       };
 
       // 强制使用custom模式
@@ -1138,7 +1149,7 @@ class AIService {
     if (provider === 'gemini' || m.includes('gemini')) return 1_000_000;
 
     // Many OpenAI-compatible providers expose these model names; match by model string first.
-    if (m.includes('deepseek')) return 128_000;
+    if (provider === 'deepseek' || m.includes('deepseek')) return DEEPSEEK_V4_CONTEXT_WINDOW;
     if (m.includes('moonshot') || m.includes('kimi')) return 128_000;
     if (provider === 'zhipu' || m.includes('glm')) return 128_000;
 
@@ -1151,14 +1162,44 @@ class AIService {
     return null;
   }
 
+  private getApproxMaxOutputTokens(provider: APIProvider, model: string): number | null {
+    const m = (model || '').toLowerCase();
+
+    if (provider === 'deepseek' || m.includes('deepseek')) return DEEPSEEK_V4_MAX_OUTPUT_TOKENS;
+    if (provider === 'gemini' || m.includes('gemini')) return API_PROVIDER_PRESETS.gemini.maxOutputTokens || null;
+    if (provider === 'claude' || m.includes('claude')) return API_PROVIDER_PRESETS.claude.maxOutputTokens || null;
+    if (provider === 'zhipu' || m.includes('glm')) return API_PROVIDER_PRESETS.zhipu.maxOutputTokens || null;
+    if (provider === 'openai' || m.includes('gpt-') || m.includes('o1') || m.includes('o3')) {
+      return API_PROVIDER_PRESETS.openai.maxOutputTokens || null;
+    }
+
+    return null;
+  }
+
+  private clampMaxTokensForOutputLimit(
+    provider: APIProvider,
+    model: string,
+    requestedMaxTokens: number
+  ): number {
+    const maxOutputTokens = this.getApproxMaxOutputTokens(provider, model);
+    if (!maxOutputTokens) return requestedMaxTokens;
+
+    const clamped = Math.min(requestedMaxTokens, maxOutputTokens);
+    if (clamped < requestedMaxTokens) {
+      console.warn(`[AI服务] maxTokens超过模型输出上限，已自动下调：${requestedMaxTokens} -> ${clamped}（模型最大输出≈${maxOutputTokens}）`);
+    }
+    return clamped;
+  }
+
   private clampMaxTokensForContext(
     provider: APIProvider,
     model: string,
     messagesForEstimate: Array<{ content: string }>,
     requestedMaxTokens: number
   ): number {
+    const outputLimitedMaxTokens = this.clampMaxTokensForOutputLimit(provider, model, requestedMaxTokens);
     const contextWindow = this.getApproxContextWindow(provider, model);
-    if (!contextWindow) return requestedMaxTokens;
+    if (!contextWindow) return outputLimitedMaxTokens;
 
     const inputTokens = this.estimateTokensForMessages(messagesForEstimate);
     const safety = 512;
@@ -1168,11 +1209,24 @@ class AIService {
       throw new Error(`API上下文长度不足：输入过长（估算输入≈${inputTokens} tokens），请减少世界/提示词长度或更换更大上下文模型。`);
     }
 
-    const clamped = Math.min(requestedMaxTokens, Math.max(256, available));
-    if (clamped < requestedMaxTokens) {
-      console.warn(`[AI服务] maxTokens过大，已自动下调：${requestedMaxTokens} -> ${clamped}（估算输入≈${inputTokens}，模型上下文≈${contextWindow}）`);
+    const clamped = Math.min(outputLimitedMaxTokens, Math.max(256, available));
+    if (clamped < outputLimitedMaxTokens) {
+      console.warn(`[AI服务] maxTokens过大，已自动下调：${outputLimitedMaxTokens} -> ${clamped}（估算输入≈${inputTokens}，模型上下文≈${contextWindow}）`);
     }
     return clamped;
+  }
+
+  private shouldUseMaxCompletionTokens(provider: APIProvider, model: string): boolean {
+    const m = (model || '').toLowerCase();
+    return provider === 'openai' && (m.startsWith('o1') || m.startsWith('o3') || m.startsWith('o4'));
+  }
+
+  private applyMaxTokensParam(requestBody: Record<string, unknown>, provider: APIProvider, model: string, maxTokens: number) {
+    if (this.shouldUseMaxCompletionTokens(provider, model)) {
+      requestBody.max_completion_tokens = maxTokens;
+      return;
+    }
+    requestBody.max_tokens = maxTokens;
   }
 
   private isStreamUnsupportedError(message: string): boolean {
@@ -1191,8 +1245,7 @@ class AIService {
     responseFormat?: 'json_object'
   ): Promise<string> {
     const { provider, url, apiKey, model, temperature, maxTokens } = this.config.customAPI!;
-    // 使用更保守的默认值8192，兼容更多API（如某些中转API限制为8192）
-    const safeMaxTokens = this.clampMaxTokensForContext(provider, model, messages, maxTokens || 8192);
+    const safeMaxTokens = this.clampMaxTokensForContext(provider, model, messages, maxTokens || 16000);
 
     // 智谱AI使用不同的API路径
     const chatEndpoint = provider === 'zhipu'
@@ -1214,9 +1267,9 @@ class AIService {
             model,
             messages,
             temperature: temperature || 0.7,
-            max_tokens: safeMaxTokens,
             stream: false
           };
+          this.applyMaxTokensParam(requestBody, provider, model, safeMaxTokens);
 
           // 如果指定了 JSON 格式，添加 response_format
           // 🔥 注意：某些模型/API不支持 response_format
@@ -1250,9 +1303,9 @@ class AIService {
           model,
           messages,
           temperature: temperature || 0.7,
-          max_completion_tokens: safeMaxTokens,
           stream: false
         };
+        this.applyMaxTokensParam(requestBody, provider, model, safeMaxTokens);
 
         // 如果指定了 JSON 格式，添加 response_format
         // 🔥 注意：某些模型/API不支持 response_format

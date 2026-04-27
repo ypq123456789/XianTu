@@ -514,7 +514,7 @@ class AIBidirectionalSystemClass {
         if (vectorMemoryService.isEnabled() && Array.isArray(longTermMemories) && longTermMemories.length > 0) {
           const stats = await vectorMemoryService.getStats();
           if (stats.total === 0) {
-            console.warn('[向量记忆] 向量库为空：请先在【记忆中心 -> 向量库】一键转化长期记忆');
+            console.warn('[长期检索] 索引为空：请先在【记忆中心 -> 长期检索】转化长期记忆');
           } else {
             const recentShort = (v3?.社交?.记忆?.短期记忆 || []).slice(-2).join('\n');
             const searchQuery = [userMessage || '', recentShort].filter(Boolean).join('\n');
@@ -525,11 +525,32 @@ class AIBidirectionalSystemClass {
             vectorMemorySection = vectorMemoryService.formatForAI(results);
             // 清空全量长期记忆，改用向量检索结果（即使为空也不再全量发送，避免token爆炸）
             stateForAI.社交.记忆.长期记忆 = [];
-            console.log(`[向量记忆] 已注入 ${results.length} 条相关长期记忆（向量库总数：${stats.total}）`);
+            console.log(`[长期检索] 已注入 ${results.length} 条相关长期记忆（索引总数：${stats.total}）`);
           }
         }
       } catch (e) {
-        console.warn('[向量记忆] 检索失败，使用全量模式:', e);
+        console.warn('[长期检索] 检索失败，使用全量模式:', e);
+      }
+
+      // 织界同款叙事 RAG：按本次输入检索历史 GM 叙事片段，增强长程剧情连续性
+      let narrativeRagSection = '';
+      try {
+        const { narrativeRagService } = await import('@/services/narrativeRagService');
+        const active = useCharacterStore().rootState.当前激活存档;
+        if (active?.角色ID && active?.存档槽位) {
+          await narrativeRagService.init(`${active.角色ID}_${active.存档槽位}`);
+        }
+        if (narrativeRagService.isEnabled()) {
+          const recentShort = (v3?.社交?.记忆?.短期记忆 || []).slice(-2).join('\n');
+          const ragQuery = [userMessage || '', recentShort, stateForAI.角色?.位置?.描述 || ''].filter(Boolean).join('\n');
+          narrativeRagSection = await narrativeRagService.buildSectionForPrompt(ragQuery || '继续当前剧情', v3);
+          if (narrativeRagSection) {
+            const stats = await narrativeRagService.getStats();
+            console.log(`[叙事检索] 已注入相关叙事片段（索引总数：${stats.total}）`);
+          }
+        }
+      } catch (e) {
+        console.warn('[叙事检索] 检索失败，跳过叙事增强:', e);
       }
 
       // 保存短期记忆用于单独发送
@@ -754,6 +775,7 @@ ${assembledPrompt}
 ${travelStatusPrompt}
 ${coreStatusSummary}
 ${vectorMemorySection ? `\n${vectorMemorySection}\n` : ''}
+${narrativeRagSection ? `\n${narrativeRagSection}\n` : ''}
 # 游戏状态
 你正在修仙世界《仙途》中扮演GM。以下是当前完整游戏存档(JSON格式):
 ${stateJsonString}
@@ -947,6 +969,7 @@ ${worldStandardsPrompt}
 
 ${coreStatusSummary}
 ${vectorMemorySection ? `\n${vectorMemorySection}\n` : ''}
+${narrativeRagSection ? `\n${narrativeRagSection}\n` : ''}
 # 当前游戏状态（用于叙事判定，无需输出指令）
 ${narrativeStateJson}
 `.trim();
@@ -2483,15 +2506,15 @@ ${saveDataJson}`;
       gameStateStore.memory.长期记忆.push(newLongTermMemory);
       gameStateStore.memory.中期记忆 = memoriesToKeep;
 
-      // 🔥 同步到向量记忆库（如果启用）
+      // 🔥 同步到长期检索索引（如果启用）
       try {
         const { vectorMemoryService } = await import('@/services/vectorMemoryService');
         if (vectorMemoryService.canAutoIndex()) {
           await vectorMemoryService.addMemory(newLongTermMemory, 7);
-          console.log('[向量记忆] 新长期记忆已添加到向量库');
+          console.log('[长期检索] 新长期记忆已添加到检索索引');
         }
       } catch (e) {
-        console.warn('[向量记忆] 添加到向量库失败:', e);
+        console.warn('[长期检索] 添加到检索索引失败:', e);
       }
 
       // 7. 保存到存档

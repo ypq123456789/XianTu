@@ -270,12 +270,33 @@ button {
   gap: 0.5rem;
 }
 
-.action-btn .btn-text {
-  display: inline !important;
+/* 带文字的面板按钮不能套用全局 48px 圆形图标按钮尺寸 */
+.game-panel .action-btn:not(.icon-btn),
+.api-management-panel .action-btn,
+.memory-center-panel .action-btn,
+.dao-panel .action-btn {
   width: auto !important;
-  text-align: left !important;
+  height: auto !important;
+  min-width: 0 !important;
+  min-height: 36px;
+  max-width: 100%;
+  flex: 0 1 auto;
+  justify-content: center;
+  white-space: normal;
+  line-height: 1.2;
+  border-radius: 8px;
+}
+
+.action-btn .btn-text {
+  display: inline-block !important;
+  min-width: 0;
+  max-width: 100%;
+  width: auto !important;
+  text-align: center !important;
   font-size: inherit;
   color: inherit;
+  line-height: 1.2;
+  overflow-wrap: anywhere;
 }
 
 .action-btn svg {

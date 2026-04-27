@@ -1215,7 +1215,8 @@ const comprehendFromNature = () => {
   min-width: 0;
   padding: 10px 12px;
   font-size: 0.85rem;
-  white-space: nowrap;
+  white-space: normal;
+  overflow-wrap: anywhere;
 }
 
 /* 工具栏 */
@@ -1295,6 +1296,8 @@ const comprehendFromNature = () => {
 .quick-actions {
   display: flex;
   gap: 12px;
+  flex-wrap: wrap;
+  justify-content: center;
 }
 
 /* 大道列表 */
@@ -1323,13 +1326,25 @@ const comprehendFromNature = () => {
   justify-content: center;
   gap: 6px;
   padding: 10px 16px;
+  width: auto !important;
+  height: auto !important;
+  min-width: 0;
+  min-height: 40px;
+  max-width: 100%;
   background: var(--color-background);
   border: 1px solid var(--color-border);
   border-radius: 8px;
   color: var(--color-text);
   font-size: 0.9rem;
+  line-height: 1.2;
+  white-space: normal;
+  overflow-wrap: anywhere;
   cursor: pointer;
   transition: all 0.2s;
+}
+
+.action-btn svg {
+  flex: 0 0 auto;
 }
 
 .action-btn:hover {

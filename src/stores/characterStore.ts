@@ -1046,8 +1046,10 @@ export const useCharacterStore = defineStore('characterV3', () => {
         // 🔥 初始化向量记忆服务并导入现有长期记忆
         try {
           const { vectorMemoryService } = await import('@/services/vectorMemoryService');
+          const { narrativeRagService } = await import('@/services/narrativeRagService');
           const saveSlotId = `${charId}_${slotKey}`;
           await vectorMemoryService.init(saveSlotId);
+          await narrativeRagService.init(saveSlotId);
 
           // 如果启用了向量记忆且向量库为空，导入现有长期记忆
           if (vectorMemoryService.isEnabled()) {

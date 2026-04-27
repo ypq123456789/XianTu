@@ -27,7 +27,7 @@
     </div>
 
     <!-- 导出工具 -->
-    <div class="export-section" v-if="!showSettings && activeFilter !== 'vector'">
+    <div class="export-section" v-if="!showSettings && !['vector', 'rag'].includes(activeFilter)">
       <button
         class="export-btn-main"
         @click="exportMemoriesAsNovel"
@@ -170,7 +170,7 @@
           <div class="vector-status">
             <span class="status-dot" :class="{ enabled: vectorEnabled }"></span>
             <span class="status-text">
-              {{ vectorEnabled ? '向量检索已启用' : '向量检索未启用（不会参与AI检索）' }}
+              {{ vectorEnabled ? '长期记忆检索已启用' : '长期记忆检索未启用（不会检索长期记忆）' }}
             </span>
             <div class="status-subtext" :class="{ warning: !embeddingStatus.available }">
               <template v-if="embeddingStatus.available">
@@ -180,18 +180,21 @@
                 {{ embeddingStatus.reason }}
               </template>
             </div>
+            <div class="memory-purpose-hint">
+              用途：检索“长期记忆”中的总结性信息，例如人物关系、承诺、重大事件。需要为 Embedding 分配独立 API，适合精确语义检索。
+            </div>
           </div>
           <div class="vector-actions">
             <button
               class="action-btn info"
               @click="rebuildVectorFromLongTerm"
               :disabled="vectorLoading || vectorConverting || longTermMemories.length === 0"
-              :title="longTermMemories.length === 0 ? '当前没有长期记忆可转化' : '清空并重新生成向量库（优先使用Embedding）'"
+              :title="longTermMemories.length === 0 ? '当前没有长期记忆可转化' : '清空并重新生成长期检索索引（优先使用 Embedding）'"
             >
-              一键转化长期记忆
+              转化长期
             </button>
             <button class="action-btn info" @click="refreshVectorMemories" :disabled="vectorLoading">刷新</button>
-            <button class="action-btn warning" @click="clearVectorMemories" :disabled="vectorLoading || vectorTotalCount === 0">清空向量库</button>
+            <button class="action-btn warning" @click="clearVectorMemories" :disabled="vectorLoading || vectorTotalCount === 0">清空</button>
           </div>
         </div>
 
@@ -207,13 +210,13 @@
 
         <div v-else-if="vectorTotalCount === 0" class="empty-state">
           <div class="empty-icon">🧬</div>
-          <div class="empty-text">向量库为空</div>
+          <div class="empty-text">长期检索索引为空</div>
           <button
             class="action-btn info"
             @click="rebuildVectorFromLongTerm"
             :disabled="vectorConverting || longTermMemories.length === 0"
           >
-            一键转化长期记忆
+            转化长期
           </button>
         </div>
 
@@ -266,6 +269,104 @@
               </div>
               <div class="vector-tags" v-if="entry.tags?.length">
                 <span v-for="tag in entry.tags" :key="tag" class="vector-tag">#{{ tag }}</span>
+              </div>
+              <div class="vector-text">{{ entry.content }}</div>
+            </div>
+          </div>
+        </div>
+      </template>
+
+      <template v-else-if="activeFilter === 'rag'">
+        <div class="vector-toolbar">
+          <div class="vector-status">
+            <span class="status-dot" :class="{ enabled: narrativeRagConfig.enabled }"></span>
+            <span class="status-text">
+              {{ narrativeRagConfig.enabled ? '叙事片段检索已启用' : '叙事片段检索未启用（不会注入历史剧情片段）' }}
+            </span>
+            <div class="status-subtext" :class="{ warning: !narrativeRagEmbeddingStatus.available }">
+              <template v-if="narrativeRagEmbeddingStatus.available">
+                Embedding：{{ narrativeRagEmbeddingStatus.provider }}/{{ narrativeRagEmbeddingStatus.model }}
+              </template>
+              <template v-else>
+                {{ narrativeRagEmbeddingStatus.reason }}
+              </template>
+            </div>
+            <div class="memory-purpose-hint">
+              用途：检索“历史叙事正文”中的具体剧情片段，例如旧地点细节、曾经发生的战斗、NPC 当时的反应。没有 Embedding 时也会使用本地向量兜底。
+            </div>
+          </div>
+          <div class="vector-actions">
+            <button class="action-btn info" @click="toggleNarrativeRag" :disabled="narrativeRagLoading">
+              {{ narrativeRagConfig.enabled ? '关闭叙事检索' : '开启叙事检索' }}
+            </button>
+            <button class="action-btn info" @click="syncNarrativeRag" :disabled="narrativeRagLoading">同步叙事</button>
+            <button class="action-btn info" @click="refreshNarrativeRag" :disabled="narrativeRagLoading">刷新</button>
+            <button class="action-btn warning" @click="clearNarrativeRag" :disabled="narrativeRagLoading || narrativeRagTotalCount === 0">清空</button>
+          </div>
+        </div>
+
+        <div class="vector-stats rag-settings">
+          <label class="rag-setting">
+            Top-K
+            <input v-model.number="narrativeRagConfig.topK" type="number" min="1" max="20" class="setting-input" @change="saveNarrativeRagConfig" />
+          </label>
+          <label class="rag-setting">
+            相似度阈值
+            <input v-model.number="narrativeRagConfig.minSimilarity" type="number" min="0.05" max="1" step="0.05" class="setting-input" @change="saveNarrativeRagConfig" />
+          </label>
+          <label class="rag-setting">
+            最大注入字数
+            <input v-model.number="narrativeRagConfig.maxContextChars" type="number" min="200" max="10000" class="setting-input" @change="saveNarrativeRagConfig" />
+          </label>
+        </div>
+
+        <div v-if="narrativeRagLoading" class="loading-state">
+          <div class="loading-spinner">⏳</div>
+          <div class="loading-text">{{ narrativeRagLoadingText }}</div>
+        </div>
+
+        <div v-else-if="narrativeRagError" class="empty-state">
+          <div class="empty-icon">⚠️</div>
+          <div class="empty-text">{{ narrativeRagError }}</div>
+        </div>
+
+        <div v-else-if="narrativeRagTotalCount === 0" class="empty-state">
+          <div class="empty-icon">🕸️</div>
+          <div class="empty-text">叙事检索索引为空。点击“同步叙事”后，会索引历史 GM 叙事用于长程剧情检索。</div>
+        </div>
+
+        <div v-else class="vector-content">
+          <div class="vector-stats" v-if="narrativeRagStats">
+            <div class="stats-item">
+              <span class="stats-label">总数</span>
+              <span class="stats-value">{{ narrativeRagStats.total }}</span>
+            </div>
+            <div class="stats-item">
+              <span class="stats-label">类型</span>
+              <span class="stats-value">
+                <span v-for="entry in Object.entries(narrativeRagStats.byVectorType)" :key="entry[0]" class="stats-chip">{{ entry[0] }}: {{ entry[1] }} </span>
+              </span>
+            </div>
+          </div>
+
+          <div class="pagination-controls" v-if="narrativeRagTotalCount > pageSize">
+            <div class="pagination-info">第 {{ currentPage }} / {{ narrativeRagTotalPages }} 页，共 {{ narrativeRagTotalCount }} 条</div>
+            <div class="pagination-buttons">
+              <button class="page-btn" @click="goToFirstPage" :disabled="currentPage === 1"><ChevronsLeft :size="16" /></button>
+              <button class="page-btn" @click="goToPage(currentPage - 1)" :disabled="currentPage === 1"><ChevronLeft :size="16" /></button>
+              <button class="page-btn" @click="goToPage(currentPage + 1)" :disabled="currentPage === narrativeRagTotalPages"><ChevronRight :size="16" /></button>
+              <button class="page-btn" @click="goToLastPage" :disabled="currentPage === narrativeRagTotalPages"><ChevronsRight :size="16" /></button>
+            </div>
+          </div>
+
+          <div class="vector-list">
+            <div v-for="entry in narrativeRagEntriesPaged" :key="entry.id" class="vector-card">
+              <div class="vector-card-header">
+                <div class="vector-badges">
+                  <span class="vector-badge">#{{ entry.narrativeIndex }}</span>
+                  <span class="vector-badge secondary">{{ entry.vectorType }}</span>
+                </div>
+                <div class="vector-time">{{ formatTime(entry.timestamp) }}</div>
               </div>
               <div class="vector-text">{{ entry.content }}</div>
             </div>
@@ -479,6 +580,7 @@ import { debug } from '@/utils/debug';
 import { type MemoryFormatConfig } from '@/utils/memoryFormatConfig';
 import { AIBidirectionalSystem } from '@/utils/AIBidirectionalSystem'; // 导入AI系统
 import { vectorMemoryService, type VectorMemoryEntry } from '@/services/vectorMemoryService';
+import { narrativeRagService, type NarrativeRagEntry } from '@/services/narrativeRagService';
 import { useAPIManagementStore } from '@/stores/apiManagementStore'; // 导入API管理Store
 
 interface Memory {
@@ -570,7 +672,27 @@ const vectorLoadingText = computed(() => {
     const suffix = total > 0 ? `（${done}/${total}）` : '';
     return `正在向量化长期记忆...${suffix}`;
   }
-  return '正在读取向量库...';
+  return '正在读取长期检索索引...';
+});
+
+// 叙事 RAG 检索（来自织界方案）
+const narrativeRagEntries = ref<NarrativeRagEntry[]>([]);
+const narrativeRagStats = ref<Awaited<ReturnType<typeof narrativeRagService.getStats>> | null>(null);
+const narrativeRagConfig = ref(narrativeRagService.getConfig());
+const narrativeRagLoading = ref(false);
+const narrativeRagError = ref('');
+const narrativeRagSyncProgress = ref({ done: 0, total: 0 });
+const narrativeRagEmbeddingStatus = computed(() => narrativeRagService.getEmbeddingStatus());
+const narrativeRagTotalCount = computed(() => narrativeRagStats.value?.total ?? narrativeRagEntries.value.length);
+const narrativeRagTotalPages = computed(() => Math.ceil(narrativeRagTotalCount.value / pageSize.value) || 1);
+const narrativeRagEntriesPaged = computed(() => {
+  const start = (currentPage.value - 1) * pageSize.value;
+  const end = start + pageSize.value;
+  return narrativeRagEntries.value.slice(start, end);
+});
+const narrativeRagLoadingText = computed(() => {
+  const { done, total } = narrativeRagSyncProgress.value;
+  return total > 0 ? `正在同步叙事历史...（${done}/${total}）` : '正在读取叙事检索索引...';
 });
 
 // 合并所有记忆用于显示
@@ -589,7 +711,8 @@ const memoryTypes = computed(() => [
   { key: 'short', name: t('短期'), icon: '⚡' },
   { key: 'medium', name: t('中期'), icon: '💭' },
   { key: 'long', name: t('长期'), icon: '💾' },
-  { key: 'vector', name: '向量库', icon: '🧬' }
+  { key: 'vector', name: '长期检索', icon: '🧬' },
+  { key: 'rag', name: '叙事检索', icon: '🕸️' }
 ]);
 
 // 筛选后的记忆（不分页）
@@ -631,6 +754,7 @@ const getTypeCount = (type: string): number => {
     case 'medium': return mediumTermMemories.value.length;
     case 'long': return longTermMemories.value.length;
     case 'vector': return vectorTotalCount.value;
+    case 'rag': return narrativeRagTotalCount.value;
     default: return 0;
   }
 };
@@ -802,9 +926,101 @@ const refreshVectorMemories = async () => {
     vectorStats.value = stats;
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error || '');
-    vectorError.value = message ? `向量库读取失败：${message}` : '向量库读取失败';
+    vectorError.value = message ? `长期检索索引读取失败：${message}` : '长期检索索引读取失败';
   } finally {
     vectorLoading.value = false;
+  }
+};
+
+const getCurrentSaveDataForRag = () => {
+  try {
+    return gameStateStore.toSaveData();
+  } catch {
+    return null;
+  }
+};
+
+const ensureNarrativeRagReady = async () => {
+  const active = characterStore.rootState.当前激活存档;
+  if (active?.角色ID && active?.存档槽位) {
+    await narrativeRagService.init(`${active.角色ID}_${active.存档槽位}`);
+  }
+};
+
+const refreshNarrativeRag = async () => {
+  if (narrativeRagLoading.value) return;
+  narrativeRagLoading.value = true;
+  narrativeRagError.value = '';
+  narrativeRagSyncProgress.value = { done: 0, total: 0 };
+  try {
+    await ensureNarrativeRagReady();
+    const [entries, stats] = await Promise.all([
+      narrativeRagService.getAllEntries(),
+      narrativeRagService.getStats(),
+    ]);
+    narrativeRagEntries.value = [...entries].sort((a, b) => b.narrativeIndex - a.narrativeIndex);
+    narrativeRagStats.value = stats;
+    narrativeRagConfig.value = narrativeRagService.getConfig();
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error || '');
+    narrativeRagError.value = message ? `叙事检索读取失败：${message}` : '叙事检索读取失败';
+  } finally {
+    narrativeRagLoading.value = false;
+  }
+};
+
+const saveNarrativeRagConfig = () => {
+  narrativeRagService.saveConfig(narrativeRagConfig.value);
+  narrativeRagConfig.value = narrativeRagService.getConfig();
+  toast.success('叙事检索配置已保存');
+};
+
+const syncNarrativeRag = async () => {
+  if (narrativeRagLoading.value) return;
+  const saveData = getCurrentSaveDataForRag();
+  if (!saveData) {
+    toast.warning('当前没有可索引的存档数据');
+    return;
+  }
+
+  narrativeRagLoading.value = true;
+  narrativeRagError.value = '';
+  narrativeRagSyncProgress.value = { done: 0, total: 0 };
+  try {
+    await ensureNarrativeRagReady();
+    const total = narrativeRagService.countVectorizableNarratives(saveData);
+    const added = await narrativeRagService.ensureIndexed(saveData, {
+      batchSize: 32,
+      onProgress: (done) => {
+        narrativeRagSyncProgress.value = { done, total };
+      },
+    });
+    const [entries, stats] = await Promise.all([
+      narrativeRagService.getAllEntries(),
+      narrativeRagService.getStats(),
+    ]);
+    narrativeRagEntries.value = [...entries].sort((a, b) => b.narrativeIndex - a.narrativeIndex);
+    narrativeRagStats.value = stats;
+    narrativeRagConfig.value = narrativeRagService.getConfig();
+    toast.success(added > 0 ? `已同步 ${added} 条叙事向量` : '叙事向量已是最新');
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error || '');
+    toast.error(message ? `同步失败：${message}` : '同步失败');
+  } finally {
+    narrativeRagLoading.value = false;
+    narrativeRagSyncProgress.value = { done: 0, total: 0 };
+  }
+};
+
+const toggleNarrativeRag = async () => {
+  const nextEnabled = !narrativeRagConfig.value.enabled;
+  narrativeRagService.saveConfig({ ...narrativeRagConfig.value, enabled: nextEnabled });
+  narrativeRagConfig.value = narrativeRagService.getConfig();
+  toast.success(nextEnabled ? '叙事检索已开启' : '叙事检索已关闭');
+  if (nextEnabled) {
+    await syncNarrativeRag();
+  } else {
+    await refreshNarrativeRag();
   }
 };
 
@@ -815,10 +1031,16 @@ const setActiveFilter = async (filterKey: string) => {
   jumpToPage.value = '';
   if (filterKey === 'vector') {
     await refreshVectorMemories();
+  } else if (filterKey === 'rag') {
+    await refreshNarrativeRag();
   }
 };
 
-const getActiveTotalPages = () => (activeFilter.value === 'vector' ? vectorTotalPages.value : totalPages.value);
+const getActiveTotalPages = () => {
+  if (activeFilter.value === 'vector') return vectorTotalPages.value;
+  if (activeFilter.value === 'rag') return narrativeRagTotalPages.value;
+  return totalPages.value;
+};
 
 // 分页相关函数
 const goToPage = (page: number) => {
@@ -860,8 +1082,8 @@ const rebuildVectorFromLongTerm = async () => {
 
   const count = longTermMemories.value.length;
   uiStore.showRetryDialog({
-    title: '一键转化长期记忆',
-    message: `将清空当前向量库，并把 ${count} 条长期记忆转化为向量（优先使用Embedding；未配置则回退本地向量）。此操作可能产生 Embedding API 调用与费用。`,
+    title: '转化长期记忆索引',
+    message: `将清空当前长期检索索引，并把 ${count} 条长期记忆转化为向量（优先使用 Embedding；未配置则回退本地向量）。此操作可能产生 Embedding API 调用与费用。`,
     confirmText: '开始转化',
     cancelText: '取消',
     onConfirm: async () => {
@@ -897,15 +1119,36 @@ const rebuildVectorFromLongTerm = async () => {
 
 const clearVectorMemories = async () => {
   uiStore.showRetryDialog({
-    title: '清空向量库',
-    message: '确定要清空向量库吗？此操作不可撤销。',
+    title: '清空长期检索索引',
+    message: '确定要清空长期检索索引吗？此操作不可撤销，但不会删除长期记忆正文。',
     confirmText: '确认清空',
     cancelText: '取消',
     onConfirm: async () => {
       try {
         await vectorMemoryService.clear();
         await refreshVectorMemories();
-        toast.success('向量库已清空');
+        toast.success('长期检索索引已清空');
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error || '');
+        toast.error(message ? `清空失败：${message}` : '清空失败');
+      }
+    },
+    onCancel: () => {}
+  });
+};
+
+const clearNarrativeRag = async () => {
+  uiStore.showRetryDialog({
+    title: '清空叙事检索索引',
+    message: '确定要清空当前存档的叙事检索索引吗？叙事历史和正式记忆不会被删除。',
+    confirmText: '确认清空',
+    cancelText: '取消',
+    onConfirm: async () => {
+      try {
+        await ensureNarrativeRagReady();
+        await narrativeRagService.clear();
+        await refreshNarrativeRag();
+        toast.success('叙事检索索引已清空');
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error || '');
         toast.error(message ? `清空失败：${message}` : '清空失败');
@@ -1236,6 +1479,8 @@ onMounted(async () => {
   await loadMemoryConfig();
   try {
     vectorStats.value = await vectorMemoryService.getStats();
+    await ensureNarrativeRagReady();
+    narrativeRagStats.value = await narrativeRagService.getStats();
   } catch {
     // ignore
   }
@@ -1718,14 +1963,21 @@ const addTestMediumTermMemory = async () => {
 .action-btn {
   display: flex;
   align-items: center;
+  justify-content: center;
   gap: 0.5rem;
   padding: 0.5rem 1rem;
+  width: auto !important;
+  height: auto !important;
+  min-width: 0;
+  min-height: 38px;
+  max-width: 100%;
   border: 1px solid var(--color-border);
   border-radius: 4px;
   cursor: pointer;
   font-size: 0.875rem;
   transition: var(--transition-fast);
-  white-space: nowrap;
+  white-space: normal;
+  line-height: 1.2;
   box-sizing: border-box;
   background: var(--color-surface);
   color: var(--color-text);
@@ -1733,11 +1985,14 @@ const addTestMediumTermMemory = async () => {
 
 /* 修复按钮文字被全局样式覆盖的问题 */
 .action-btn .btn-text {
-  display: inline;
-  width: auto;
-  text-align: left;
+  display: inline-block;
+  min-width: 0;
+  max-width: 100%;
+  text-align: center;
   font-size: inherit;
+  line-height: 1.2;
   color: inherit;
+  overflow-wrap: anywhere;
 }
 
 @keyframes fadeIn {
@@ -1760,7 +2015,7 @@ const addTestMediumTermMemory = async () => {
   cursor: pointer;
   font-size: 0.875rem;
   transition: var(--transition-fast);
-  white-space: nowrap;
+  white-space: normal;
   overflow: hidden;
   text-overflow: ellipsis;
   box-sizing: border-box;
@@ -2317,6 +2572,9 @@ const addTestMediumTermMemory = async () => {
   display: flex;
   align-items: center;
   gap: 0.5rem;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  min-width: 0;
 }
 
 .vector-content {
@@ -2332,6 +2590,30 @@ const addTestMediumTermMemory = async () => {
   border: 1px solid var(--color-border);
   border-radius: 10px;
   background: var(--color-surface);
+}
+
+.rag-settings {
+  align-items: center;
+}
+
+.rag-setting {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  color: var(--color-text-secondary);
+  font-size: 0.875rem;
+}
+
+.rag-setting .setting-input {
+  width: 96px;
+}
+
+.memory-purpose-hint {
+  margin-top: 0.45rem;
+  color: var(--color-text-secondary);
+  font-size: 0.8rem;
+  line-height: 1.45;
+  max-width: 680px;
 }
 
 .stats-item {

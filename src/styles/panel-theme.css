@@ -86,10 +86,14 @@
   background: var(--color-surface);
   color: var(--color-text);
   font-size: 0.875rem;
-  white-space: nowrap;
+  white-space: normal;
   cursor: pointer;
   transition: var(--transition-fast);
-  flex-shrink: 0;
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: 100%;
+  line-height: 1.2;
+  text-align: center;
 }
 
 .action-btn svg {
@@ -99,7 +103,11 @@
 }
 
 .action-btn .btn-text {
-  flex-shrink: 0;
+  min-width: 0;
+  max-width: 100%;
+  flex-shrink: 1;
+  overflow-wrap: anywhere;
+  text-align: center;
 }
 
 .action-btn:hover {
@@ -160,7 +168,9 @@
 .action-btn .btn-text,
 .action-btn > span {
   font-weight: 500;
-  white-space: nowrap;
+  white-space: normal;
+  min-width: 0;
+  overflow-wrap: anywhere;
 }
 
 /* === 内容区域 === */

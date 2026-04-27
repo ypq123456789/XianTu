@@ -7,7 +7,7 @@
  */
 import { defineStore } from 'pinia';
 import { ref, computed } from 'vue';
-import type { APIProvider } from '@/services/aiService';
+import { API_PROVIDER_PRESETS, type APIProvider } from '@/services/aiService';
 
 export interface APIConfig {
   id: string;
@@ -67,6 +67,28 @@ export interface APIAssignment {
 export type RunMode = 'tavern' | 'web';
 
 export const useAPIManagementStore = defineStore('apiManagement', () => {
+  const normalizeDeepSeekConfig = (config: APIConfig): APIConfig => {
+    const isDeepSeek = config.provider === 'deepseek' || (config.url || '').toLowerCase().includes('deepseek.com');
+    if (!isDeepSeek) return config;
+
+    const preset = API_PROVIDER_PRESETS.deepseek;
+    const normalized: APIConfig = { ...config };
+    const model = (normalized.model || '').trim();
+    if (!model || model === 'deepseek-chat' || model === 'deepseek-reasoner') {
+      normalized.model = preset.defaultModel;
+    }
+    if (!normalized.url) {
+      normalized.url = preset.url;
+    }
+    if (!Number.isFinite(normalized.maxTokens) || normalized.maxTokens < 100) {
+      normalized.maxTokens = preset.defaultMaxTokens || 64000;
+    } else if (preset.maxOutputTokens && normalized.maxTokens > preset.maxOutputTokens) {
+      normalized.maxTokens = preset.maxOutputTokens;
+    }
+
+    return normalized;
+  };
+
   const DEFAULT_API_ASSIGNMENTS: APIAssignment[] = [
     { type: 'main', apiId: 'default' },
     { type: 'memory_summary', apiId: 'default' },
@@ -144,7 +166,7 @@ export const useAPIManagementStore = defineStore('apiManagement', () => {
             ...data.aiGenerationSettings
           };
         }
-        apiConfigs.value = data.apiConfigs || [];
+        apiConfigs.value = (data.apiConfigs || []).map((config: APIConfig) => normalizeDeepSeekConfig(config));
 
         const knownTypes = new Set(DEFAULT_API_ASSIGNMENTS.map(a => a.type));
         const mergedAssignments = new Map<APIUsageType, APIAssignment>();
