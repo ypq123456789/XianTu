@@ -1051,15 +1051,12 @@ export const useCharacterStore = defineStore('characterV3', () => {
           await vectorMemoryService.init(saveSlotId);
           await narrativeRagService.init(saveSlotId);
 
-          // 如果启用了向量记忆且向量库为空，导入现有长期记忆
+          // 如果启用了长期检索，将当前存档的长期记忆同步成本地向量索引
           if (vectorMemoryService.isEnabled()) {
             const existingMemories = (targetSlot.存档数据 as any).社交?.记忆?.长期记忆 || [];
             if (existingMemories.length > 0) {
-              const stats = await vectorMemoryService.getStats();
-              if (stats.total === 0) {
-                debug.log('角色商店', `向量记忆库为空，开始导入 ${existingMemories.length} 条长期记忆`);
-                await vectorMemoryService.importLongTermMemories(existingMemories);
-              }
+              debug.log('角色商店', `同步 ${existingMemories.length} 条长期记忆到本地检索索引`);
+              await vectorMemoryService.syncFromLongTermMemories(existingMemories);
             }
           }
         } catch (e) {

@@ -181,15 +181,18 @@
               </template>
             </div>
             <div class="memory-purpose-hint">
-              用途：检索“长期记忆”中的总结性信息，例如人物关系、承诺、重大事件。需要为 Embedding 分配独立 API，适合精确语义检索。
+              用途：检索“长期记忆”中的总结性信息，例如人物关系、承诺、重大事件。与叙事检索共用 API 管理里的 Embedding 配置；未配置时不会参与 AI 检索。
             </div>
           </div>
           <div class="vector-actions">
+            <button class="action-btn info" @click="toggleVectorMemory" :disabled="vectorLoading || (!vectorMemoryConfig.enabled && !embeddingStatus.available)">
+              {{ vectorMemoryConfig.enabled ? '关闭长期检索' : '开启长期检索' }}
+            </button>
             <button
               class="action-btn info"
               @click="rebuildVectorFromLongTerm"
-              :disabled="vectorLoading || vectorConverting || longTermMemories.length === 0"
-              :title="longTermMemories.length === 0 ? '当前没有长期记忆可转化' : '清空并重新生成长期检索索引（优先使用 Embedding）'"
+              :disabled="vectorLoading || vectorConverting || longTermMemories.length === 0 || !embeddingStatus.available"
+              :title="!embeddingStatus.available ? '请先在 API 管理中配置 Embedding' : (longTermMemories.length === 0 ? '当前没有长期记忆可转化' : '清空并重新生成长期检索索引')"
             >
               转化长期
             </button>
@@ -214,7 +217,7 @@
           <button
             class="action-btn info"
             @click="rebuildVectorFromLongTerm"
-            :disabled="vectorConverting || longTermMemories.length === 0"
+            :disabled="vectorConverting || longTermMemories.length === 0 || !embeddingStatus.available"
           >
             转化长期
           </button>
@@ -279,9 +282,9 @@
       <template v-else-if="activeFilter === 'rag'">
         <div class="vector-toolbar">
           <div class="vector-status">
-            <span class="status-dot" :class="{ enabled: narrativeRagConfig.enabled }"></span>
+            <span class="status-dot" :class="{ enabled: narrativeRagEnabled }"></span>
             <span class="status-text">
-              {{ narrativeRagConfig.enabled ? '叙事片段检索已启用' : '叙事片段检索未启用（不会注入历史剧情片段）' }}
+              {{ narrativeRagEnabled ? '叙事片段检索已启用' : '叙事片段检索未启用（不会注入历史剧情片段）' }}
             </span>
             <div class="status-subtext" :class="{ warning: !narrativeRagEmbeddingStatus.available }">
               <template v-if="narrativeRagEmbeddingStatus.available">
@@ -292,14 +295,14 @@
               </template>
             </div>
             <div class="memory-purpose-hint">
-              用途：检索“历史叙事正文”中的具体剧情片段，例如旧地点细节、曾经发生的战斗、NPC 当时的反应。没有 Embedding 时也会使用本地向量兜底。
+              用途：检索“历史叙事正文”中的具体剧情片段，例如旧地点细节、曾经发生的战斗、NPC 当时的反应。与长期检索共用 API 管理里的 Embedding 配置；未配置时不会建索引或注入。
             </div>
           </div>
           <div class="vector-actions">
-            <button class="action-btn info" @click="toggleNarrativeRag" :disabled="narrativeRagLoading">
+            <button class="action-btn info" @click="toggleNarrativeRag" :disabled="narrativeRagLoading || (!narrativeRagConfig.enabled && !narrativeRagEmbeddingStatus.available)">
               {{ narrativeRagConfig.enabled ? '关闭叙事检索' : '开启叙事检索' }}
             </button>
-            <button class="action-btn info" @click="syncNarrativeRag" :disabled="narrativeRagLoading">同步叙事</button>
+            <button class="action-btn info" @click="syncNarrativeRag" :disabled="narrativeRagLoading || !narrativeRagEmbeddingStatus.available">同步叙事</button>
             <button class="action-btn info" @click="refreshNarrativeRag" :disabled="narrativeRagLoading">刷新</button>
             <button class="action-btn warning" @click="clearNarrativeRag" :disabled="narrativeRagLoading || narrativeRagTotalCount === 0">清空</button>
           </div>
@@ -332,7 +335,7 @@
 
         <div v-else-if="narrativeRagTotalCount === 0" class="empty-state">
           <div class="empty-icon">🕸️</div>
-          <div class="empty-text">叙事检索索引为空。点击“同步叙事”后，会索引历史 GM 叙事用于长程剧情检索。</div>
+          <div class="empty-text">{{ narrativeRagEmbeddingStatus.available ? '叙事检索索引为空。点击“同步叙事”后，会索引历史 GM 叙事用于长程剧情检索。' : '叙事检索索引为空。请先在 API 管理中为 Embedding 配置可用 API。' }}</div>
         </div>
 
         <div v-else class="vector-content">
@@ -648,15 +651,26 @@ const longTermMemories = ref<Memory[]>([]);
 // 向量记忆（IndexedDB）
 const vectorEntries = ref<VectorMemoryEntry[]>([]);
 const vectorStats = ref<Awaited<ReturnType<typeof vectorMemoryService.getStats>> | null>(null);
+const vectorMemoryConfig = ref(vectorMemoryService.getConfig());
 const vectorLoading = ref(false);
 const vectorError = ref('');
 const vectorConverting = ref(false);
 const vectorConvertProgress = ref({ done: 0, total: 0 });
-// 🔥 向量检索启用状态：需要同时检查 vectorMemoryService 和 apiStore 的 embedding 功能
+const sharedEmbeddingAvailable = computed(() => {
+  const cfg = apiManagementStore.getAPIForType('embedding');
+  return (
+    apiManagementStore.isFunctionEnabled('embedding') &&
+    !!cfg &&
+    cfg.enabled !== false &&
+    cfg.id !== 'default' &&
+    !!(cfg.url || '').trim() &&
+    !!(cfg.apiKey || '').trim() &&
+    !!(cfg.model || '').trim()
+  );
+});
+// 🔥 向量检索启用状态：长期检索和叙事检索共用 API 管理里的 Embedding 配置
 const vectorEnabled = computed(() => {
-  const serviceEnabled = vectorMemoryService.getConfig().enabled;
-  const storeEnabled = apiManagementStore.isFunctionEnabled('embedding');
-  return serviceEnabled && storeEnabled;
+  return vectorMemoryConfig.value.enabled && sharedEmbeddingAvailable.value;
 });
 const embeddingStatus = computed(() => vectorMemoryService.getEmbeddingStatus());
 const vectorTotalCount = computed(() => vectorStats.value?.total ?? vectorEntries.value.length);
@@ -683,6 +697,9 @@ const narrativeRagLoading = ref(false);
 const narrativeRagError = ref('');
 const narrativeRagSyncProgress = ref({ done: 0, total: 0 });
 const narrativeRagEmbeddingStatus = computed(() => narrativeRagService.getEmbeddingStatus());
+const narrativeRagEnabled = computed(() => {
+  return narrativeRagConfig.value.enabled && sharedEmbeddingAvailable.value;
+});
 const narrativeRagTotalCount = computed(() => narrativeRagStats.value?.total ?? narrativeRagEntries.value.length);
 const narrativeRagTotalPages = computed(() => Math.ceil(narrativeRagTotalCount.value / pageSize.value) || 1);
 const narrativeRagEntriesPaged = computed(() => {
@@ -975,8 +992,46 @@ const saveNarrativeRagConfig = () => {
   toast.success('叙事检索配置已保存');
 };
 
+const toggleVectorMemory = async () => {
+  if (vectorLoading.value || vectorConverting.value) return;
+  const nextEnabled = !vectorMemoryConfig.value.enabled;
+  if (nextEnabled && !embeddingStatus.value.available) {
+    toast.warning('请先在 API 管理中为 Embedding 配置可用 API');
+    return;
+  }
+
+  vectorMemoryService.saveConfig({ ...vectorMemoryConfig.value, enabled: nextEnabled });
+  vectorMemoryConfig.value = vectorMemoryService.getConfig();
+  toast.success(nextEnabled ? '长期检索已开启' : '长期检索已关闭');
+
+  if (nextEnabled) {
+    const saveData = getCurrentSaveDataForRag();
+    const memories = saveData?.社交?.记忆?.长期记忆 || longTermMemories.value.map(m => m.content);
+    if (Array.isArray(memories) && memories.length > 0) {
+      vectorLoading.value = true;
+      try {
+        await vectorMemoryService.syncFromLongTermMemories(memories);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error || '');
+        toast.error(message ? `长期检索索引同步失败：${message}` : '长期检索索引同步失败');
+      } finally {
+        vectorLoading.value = false;
+      }
+      await refreshVectorMemories();
+    } else {
+      await refreshVectorMemories();
+    }
+  } else {
+    await refreshVectorMemories();
+  }
+};
+
 const syncNarrativeRag = async () => {
   if (narrativeRagLoading.value) return;
+  if (!narrativeRagEmbeddingStatus.value.available) {
+    toast.warning('请先在 API 管理中为 Embedding 配置可用 API');
+    return;
+  }
   const saveData = getCurrentSaveDataForRag();
   if (!saveData) {
     toast.warning('当前没有可索引的存档数据');
@@ -1014,6 +1069,10 @@ const syncNarrativeRag = async () => {
 
 const toggleNarrativeRag = async () => {
   const nextEnabled = !narrativeRagConfig.value.enabled;
+  if (nextEnabled && !narrativeRagEmbeddingStatus.value.available) {
+    toast.warning('请先在 API 管理中为 Embedding 配置可用 API');
+    return;
+  }
   narrativeRagService.saveConfig({ ...narrativeRagConfig.value, enabled: nextEnabled });
   narrativeRagConfig.value = narrativeRagService.getConfig();
   toast.success(nextEnabled ? '叙事检索已开启' : '叙事检索已关闭');
@@ -1075,6 +1134,10 @@ const uiStore = useUIStore();
 
 const rebuildVectorFromLongTerm = async () => {
   if (vectorLoading.value || vectorConverting.value) return;
+  if (!embeddingStatus.value.available) {
+    toast.warning('请先在 API 管理中为 Embedding 配置可用 API');
+    return;
+  }
   if (longTermMemories.value.length === 0) {
     toast.warning('当前没有长期记忆可转化');
     return;
@@ -1083,7 +1146,7 @@ const rebuildVectorFromLongTerm = async () => {
   const count = longTermMemories.value.length;
   uiStore.showRetryDialog({
     title: '转化长期记忆索引',
-    message: `将清空当前长期检索索引，并把 ${count} 条长期记忆转化为向量（优先使用 Embedding；未配置则回退本地向量）。此操作可能产生 Embedding API 调用与费用。`,
+    message: `将清空当前长期检索索引，并用共享 Embedding API 把 ${count} 条长期记忆转化为向量。此操作可能产生 Embedding API 调用与费用。`,
     confirmText: '开始转化',
     cancelText: '取消',
     onConfirm: async () => {
@@ -1098,11 +1161,7 @@ const rebuildVectorFromLongTerm = async () => {
             vectorConvertProgress.value = { done, total };
           },
         });
-        toast.success(
-          result.vectorType === 'embedding'
-            ? `转化完成：${result.imported} 条（Embedding: ${result.embeddingModel || 'unknown'}）`
-            : `转化完成：${result.imported} 条（本地向量）`
-        );
+        toast.success(`转化完成：${result.imported} 条（Embedding: ${result.embeddingModel || 'unknown'}）`);
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error || '');
         toast.error(message ? `转化失败：${message}` : '转化失败');

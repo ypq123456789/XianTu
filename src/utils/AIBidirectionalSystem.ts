@@ -510,8 +510,13 @@ class AIBidirectionalSystemClass {
       let vectorMemorySection = '';
       try {
         const { vectorMemoryService } = await import('@/services/vectorMemoryService');
+        const active = useCharacterStore().rootState.当前激活存档;
+        if (active?.角色ID && active?.存档槽位) {
+          await vectorMemoryService.init(`${active.角色ID}_${active.存档槽位}`);
+        }
         const longTermMemories = stateForAI.社交?.记忆?.长期记忆 || [];
         if (vectorMemoryService.isEnabled() && Array.isArray(longTermMemories) && longTermMemories.length > 0) {
+          await vectorMemoryService.syncFromLongTermMemories(longTermMemories);
           const stats = await vectorMemoryService.getStats();
           if (stats.total === 0) {
             console.warn('[长期检索] 索引为空：请先在【记忆中心 -> 长期检索】转化长期记忆');
@@ -532,7 +537,7 @@ class AIBidirectionalSystemClass {
         console.warn('[长期检索] 检索失败，使用全量模式:', e);
       }
 
-      // 织界同款叙事 RAG：按本次输入检索历史 GM 叙事片段，增强长程剧情连续性
+      // 记忆增强 / 叙事检索：按本次输入检索历史 GM 叙事片段，增强长程剧情连续性
       let narrativeRagSection = '';
       try {
         const { narrativeRagService } = await import('@/services/narrativeRagService');
@@ -546,11 +551,11 @@ class AIBidirectionalSystemClass {
           narrativeRagSection = await narrativeRagService.buildSectionForPrompt(ragQuery || '继续当前剧情', v3);
           if (narrativeRagSection) {
             const stats = await narrativeRagService.getStats();
-            console.log(`[叙事检索] 已注入相关叙事片段（索引总数：${stats.total}）`);
+            console.log(`[记忆增强/叙事检索] 已注入相关叙事片段（索引总数：${stats.total}）`);
           }
         }
       } catch (e) {
-        console.warn('[叙事检索] 检索失败，跳过叙事增强:', e);
+        console.warn('[记忆增强/叙事检索] 检索失败，跳过叙事增强:', e);
       }
 
       // 保存短期记忆用于单独发送

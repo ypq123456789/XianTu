@@ -4,7 +4,7 @@
  * 来自“织界”的 RAG 方案适配版：
  * - 只索引系统历史中的 assistant/GM 叙事文本，不索引玩家输入
  * - 每个存档使用独立 IndexedDB
- * - 优先使用已配置的 Embedding API；未配置或失败时回退本地哈希向量
+ * - 必须使用 API 管理里分配给 Embedding 的独立 API；未配置或失败时不建索引、不检索
  * - 发送前检索相关叙事片段，作为轻量上下文注入主提示词
  */
 import { openDB, type IDBPDatabase } from 'idb';
@@ -15,7 +15,6 @@ import {
   normalizeToUnitVector,
   type EmbeddingRequestConfig,
 } from '@/services/embeddingService';
-import { extractTags } from '@/services/vectorMemoryService';
 
 export interface NarrativeRagEntry {
   id: string;
@@ -49,8 +48,6 @@ const DEFAULT_CONFIG: NarrativeRagConfig = {
   autoIndex: true,
 };
 
-const HASH_VECTOR_SIZE = 256;
-
 function fnv1a32(input: string): number {
   let hash = 0x811c9dc5;
   for (let i = 0; i < input.length; i++) {
@@ -70,42 +67,6 @@ function dot(a: number[], b: number[]): number {
   let score = 0;
   for (let i = 0; i < a.length; i++) score += a[i] * b[i];
   return score;
-}
-
-function normalizeVector(vector: number[]): number[] {
-  const norm = Math.sqrt(vector.reduce((sum, v) => sum + v * v, 0));
-  if (!norm) return vector;
-  return vector.map(v => v / norm);
-}
-
-function tokenizeForHash(text: string): string[] {
-  const normalized = (text || '').toLowerCase();
-  const tokens: string[] = [];
-
-  tokens.push(...extractTags(normalized));
-
-  const latinMatches = normalized.match(/[a-z0-9_]+/g) || [];
-  tokens.push(...latinMatches);
-
-  const cjk = normalized.replace(/[^\u4e00-\u9fff]/g, '');
-  for (let i = 0; i < cjk.length; i++) {
-    tokens.push(cjk[i]);
-    if (i + 1 < cjk.length) tokens.push(cjk.slice(i, i + 2));
-    if (i + 2 < cjk.length) tokens.push(cjk.slice(i, i + 3));
-  }
-
-  return tokens.slice(0, 4000);
-}
-
-function hashVectorize(text: string): number[] {
-  const vector = new Array(HASH_VECTOR_SIZE).fill(0);
-  const tokens = tokenizeForHash(text);
-  for (const token of tokens) {
-    const hash = fnv1a32(token);
-    const idx = hash % HASH_VECTOR_SIZE;
-    vector[idx] += (hash & 1) === 0 ? 1 : -1;
-  }
-  return normalizeVector(vector);
 }
 
 function getNarrativeItems(saveData: any): Array<{ index: number; content: string; time?: string }> {
@@ -184,7 +145,7 @@ class NarrativeRagService {
   }
 
   isEnabled(): boolean {
-    return this.config.enabled;
+    return this.config.enabled && !!this.getEmbeddingRequestConfig();
   }
 
   private getEmbeddingRequestConfig(): EmbeddingRequestConfig | null {
@@ -216,7 +177,7 @@ class NarrativeRagService {
   getEmbeddingStatus(): { available: boolean; provider?: APIProvider; model?: string; reason?: string } {
     const cfg = this.getEmbeddingRequestConfig();
     if (cfg) return { available: true, provider: cfg.provider, model: cfg.model };
-    return { available: false, reason: '未配置独立 Embedding API，将使用本地哈希向量兜底' };
+    return { available: false, reason: '未配置独立 Embedding API，叙事检索不会启用或注入' };
   }
 
   private async embedBatch(texts: string[]): Promise<{ vectors: number[][]; model: string } | null> {
@@ -226,7 +187,7 @@ class NarrativeRagService {
       const vectors = await createEmbeddings(cfg, texts);
       return { vectors: vectors.map(v => normalizeToUnitVector(v)), model: cfg.model };
     } catch (error) {
-      console.warn('[叙事RAG] Embedding 生成失败，回退本地向量:', error);
+      console.warn('[叙事检索] Embedding 生成失败，跳过叙事检索:', error);
       return null;
     }
   }
@@ -260,6 +221,9 @@ class NarrativeRagService {
 
   async ensureIndexed(saveData: any, options?: { batchSize?: number; onProgress?: (done: number, total: number) => void }): Promise<number> {
     if (!this.db) return 0;
+    if (!this.getEmbeddingRequestConfig()) {
+      throw new Error('未配置独立 Embedding API，无法同步叙事检索索引');
+    }
     const items = getNarrativeItems(saveData);
     if (items.length === 0) return 0;
 
@@ -276,15 +240,18 @@ class NarrativeRagService {
       const batch = pending.slice(i, i + batchSize);
       const texts = batch.map(item => item.content);
       const embedded = await this.embedBatch(texts);
+      if (!embedded || embedded.vectors.length !== batch.length) {
+        throw new Error('Embedding 生成失败，叙事检索索引未写入');
+      }
 
       for (let j = 0; j < batch.length; j++) {
         const item = batch[j];
         const entry: NarrativeRagEntry = {
           id: stableNarrativeId(item.index, item.content),
           content: item.content,
-          vector: embedded?.vectors[j] || hashVectorize(item.content),
-          vectorType: embedded?.vectors[j] ? 'embedding' : 'hash',
-          embeddingModel: embedded?.vectors[j] ? embedded.model : undefined,
+          vector: embedded.vectors[j],
+          vectorType: 'embedding',
+          embeddingModel: embedded.model,
           narrativeIndex: item.index,
           timestamp: Date.now(),
           time: item.time,
@@ -300,28 +267,19 @@ class NarrativeRagService {
   }
 
   async search(query: string): Promise<NarrativeRagSearchResult[]> {
-    if (!this.db || !this.config.enabled) return [];
+    if (!this.db || !this.isEnabled()) return [];
     const entries = await this.getAllEntries();
     if (entries.length === 0) return [];
 
     const embeddedQuery = await this.embedText(query);
-    const hashQuery = hashVectorize(query);
+    if (!embeddedQuery) return [];
     const scored: NarrativeRagSearchResult[] = [];
 
     for (const entry of entries) {
-      let queryVector = hashQuery;
-      if (
-        entry.vectorType === 'embedding' &&
-        embeddedQuery &&
-        (!entry.embeddingModel || entry.embeddingModel === embeddedQuery.model) &&
-        entry.vector.length === embeddedQuery.vector.length
-      ) {
-        queryVector = embeddedQuery.vector;
-      } else if (entry.vectorType !== 'hash' || entry.vector.length !== hashQuery.length) {
-        continue;
-      }
-
-      scored.push({ entry, score: dot(queryVector, entry.vector) });
+      if (entry.vectorType !== 'embedding') continue;
+      if (entry.embeddingModel && entry.embeddingModel !== embeddedQuery.model) continue;
+      if (entry.vector.length !== embeddedQuery.vector.length) continue;
+      scored.push({ entry, score: dot(embeddedQuery.vector, entry.vector) });
     }
 
     scored.sort((a, b) => b.score - a.score);
@@ -331,7 +289,7 @@ class NarrativeRagService {
   }
 
   async buildSectionForPrompt(query: string, saveData: any): Promise<string> {
-    if (!this.config.enabled || !this.db) return '';
+    if (!this.isEnabled() || !this.db) return '';
     if (this.config.autoIndex) {
       await this.ensureIndexed(saveData);
     }
@@ -340,8 +298,10 @@ class NarrativeRagService {
     if (results.length === 0) return '';
 
     const lines = [
-      '# 【相关叙事片段】',
-      '以下片段来自此前已经发生过的叙事内容，可按需参考以保持前后因果、人物承诺、地点细节和事件连续性。不要机械复述，只在相关时承接。',
+      '# 【历史叙事检索结果】',
+      '以下内容来自本角色当前存档的“历史叙事正文”向量检索结果，是此前已经发生过的具体剧情片段。',
+      '使用要求：只在与当前输入相关时参考这些片段，用于保持前后因果、地点细节、人物承诺、战斗经过和事件连续性；不要把它们当作本轮新发生的剧情；不要机械复述；如果与当前游戏状态冲突，以当前游戏状态和最新叙事为准。',
+      '',
     ];
     let chars = 0;
     let idx = 1;
@@ -349,7 +309,8 @@ class NarrativeRagService {
       const text = result.entry.content.trim();
       if (!text) continue;
       if (chars + text.length > this.config.maxContextChars) break;
-      lines.push(`${idx}. ${text}`);
+      const scoreText = Number.isFinite(result.score) ? `（相似度 ${result.score.toFixed(3)}）` : '';
+      lines.push(`${idx}. ${text}${scoreText}`);
       chars += text.length;
       idx++;
     }
@@ -359,7 +320,8 @@ class NarrativeRagService {
 
   async getAllEntries(): Promise<NarrativeRagEntry[]> {
     if (!this.db) return [];
-    return await this.db.getAll('entries') as NarrativeRagEntry[];
+    const entries = await this.db.getAll('entries') as NarrativeRagEntry[];
+    return entries.filter(entry => entry.vectorType === 'embedding');
   }
 
   async getStats(): Promise<{ total: number; byVectorType: Record<string, number>; pending?: number }> {
