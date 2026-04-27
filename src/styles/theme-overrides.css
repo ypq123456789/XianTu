@@ -287,7 +287,8 @@ button {
   border-radius: 8px;
 }
 
-.action-btn .btn-text {
+.action-btn .btn-text,
+.action-btn > span {
   display: inline-block !important;
   min-width: 0;
   max-width: 100%;
@@ -296,6 +297,7 @@ button {
   font-size: inherit;
   color: inherit;
   line-height: 1.2;
+  white-space: normal;
   overflow-wrap: anywhere;
 }
 
