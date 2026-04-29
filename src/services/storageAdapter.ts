@@ -1,5 +1,5 @@
 ﻿import type { CharacterProfile, LocalStorageRoot, SaveData } from '@/types/game';
-import { officialBackendCloudProvider, OFFICIAL_ONLINE_SLOT, type CloudSyncStatus } from './officialBackendCloudProvider';
+import { officialBackendCloudProvider, OFFICIAL_ONLINE_SLOT, type CloudSyncStatus, type OfficialCloudCharacterListItem } from './officialBackendCloudProvider';
 
 export type CloudProviderKind = 'official' | 'webdav';
 
@@ -67,6 +67,29 @@ export async function restoreOfficialCharacterById(charId: string): Promise<{ pr
   const cloud = await officialBackendCloudProvider.downloadSave(charId);
   if (!cloud) throw new Error('作者后端没有返回该角色的云端存档，请确认角色 ID 是否正确。');
   return { profile: officialBackendCloudProvider.buildLocalProfile(charId, cloud), saveData: cloud.saveData };
+}
+
+export async function listOfficialCloudCharacters(): Promise<{ supported: boolean; characters: OfficialCloudCharacterListItem[]; message?: string }> {
+  const result = await officialBackendCloudProvider.listCharacters();
+  if (result.supported) {
+    const index = loadCloudCharacterIndex();
+    result.characters.forEach((character) => {
+      const existing = index.characters.findIndex(item => item.charId === character.charId && item.provider === 'official');
+      const next: CloudCharacterIndexItem = {
+        charId: character.charId,
+        name: character.name,
+        mode: '联机',
+        slotKey: OFFICIAL_ONLINE_SLOT,
+        version: character.version ?? 1,
+        lastSyncAt: character.lastSync ?? new Date().toISOString(),
+        provider: 'official',
+      };
+      if (existing >= 0) index.characters[existing] = next;
+      else index.characters.push(next);
+    });
+    saveCloudCharacterIndex(index);
+  }
+  return result;
 }
 
 export async function getOfficialCloudStatus(charId: string, profile?: CharacterProfile | null): Promise<CloudSyncStatus> {

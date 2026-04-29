@@ -21,10 +21,27 @@
       <button type="button" @click="checkStatus" :disabled="busy || !hasOnlineCharacter">检查状态</button>
       <button type="button" @click="saveCurrent" :disabled="busy || !hasOnlineCharacter">上传当前进度</button>
       <button type="button" @click="restoreCurrent" :disabled="busy || !hasOnlineCharacter">下载云端覆盖</button>
+      <button type="button" @click="scanOfficialCharacters" :disabled="busy">刷新账号云角色</button>
+    </div>
+
+    <div class="official-list" v-if="officialCharacters.length || officialListMessage">
+      <div class="official-list-title">账号云角色</div>
+      <p v-if="officialListMessage" class="webdav-hint">{{ officialListMessage }}</p>
+      <button
+        v-for="character in officialCharacters"
+        :key="character.charId"
+        type="button"
+        class="official-character"
+        @click="restoreListedCharacter(character.charId)"
+        :disabled="busy"
+      >
+        <span>{{ character.name }}</span>
+        <small>{{ character.charId }} · v{{ character.version ?? '?' }}</small>
+      </button>
     </div>
 
     <div class="restore-row">
-      <input v-model="restoreCharId" placeholder="输入角色 ID，如 char_..." />
+      <input v-model="restoreCharId" placeholder="兜底：输入角色 ID，如 char_..." />
       <button type="button" @click="restoreById" :disabled="busy || !restoreCharId.trim()">从作者后端恢复</button>
     </div>
 
@@ -47,16 +64,18 @@
 </template>
 
 <script setup lang="ts">
-import { computed, reactive, ref } from 'vue';
+import { computed, onMounted, reactive, ref } from 'vue';
 import { useCharacterStore } from '@/stores/characterStore';
 import { toast } from '@/utils/toast';
-import { exportCloudCharacterIndex } from '@/services/storageAdapter';
+import { exportCloudCharacterIndex, listOfficialCloudCharacters } from '@/services/storageAdapter';
 import { downloadWebDAVIndex, getWebDAVConfig, saveWebDAVConfig, uploadWebDAVIndex } from '@/services/webdavStorage';
-import type { CloudSyncStatus } from '@/services/officialBackendCloudProvider';
+import type { CloudSyncStatus, OfficialCloudCharacterListItem } from '@/services/officialBackendCloudProvider';
 
 const characterStore = useCharacterStore();
 const busy = ref(false);
 const status = ref<CloudSyncStatus | null>(null);
+const officialCharacters = ref<OfficialCloudCharacterListItem[]>([]);
+const officialListMessage = ref('');
 const restoreCharId = ref('');
 const existingWebDAV = getWebDAVConfig();
 const webdav = reactive({
@@ -122,6 +141,28 @@ async function restoreById() {
   });
 }
 
+async function scanOfficialCharacters() {
+  await run(async () => {
+    officialListMessage.value = '';
+    const result = await listOfficialCloudCharacters();
+    officialCharacters.value = result.characters;
+    if (result.supported) {
+      officialListMessage.value = result.characters.length
+        ? `已通过当前登录账号找到 ${result.characters.length} 个云角色。`
+        : '后端支持角色列表，但当前账号没有返回云角色。';
+      toast.info(officialListMessage.value);
+    } else {
+      officialListMessage.value = result.message || '作者后端没有开放角色列表接口。';
+      toast.info(officialListMessage.value);
+    }
+  });
+}
+
+async function restoreListedCharacter(charId: string) {
+  restoreCharId.value = charId;
+  await restoreById();
+}
+
 function saveWebDAV() {
   saveWebDAVConfig({ ...webdav });
   toast.success('WebDAV 配置已保存到本地浏览器');
@@ -143,6 +184,10 @@ async function downloadIndex() {
     toast.success(`已下载 ${index.characters.length} 条云角色索引`);
   });
 }
+
+onMounted(() => {
+  void scanOfficialCharacters();
+});
 </script>
 
 <style scoped>
@@ -209,6 +254,28 @@ async function downloadIndex() {
   margin-top: 0.9rem;
   padding-top: 0.9rem;
   border-top: 1px dashed rgba(255, 255, 255, 0.16);
+}
+.official-list {
+  display: grid;
+  gap: 0.5rem;
+  margin-top: 0.75rem;
+}
+.official-list-title { font-weight: 700; }
+.official-character {
+  display: flex;
+  justify-content: space-between;
+  gap: 0.75rem;
+  align-items: center;
+  border: 1px solid rgba(125, 211, 252, 0.24);
+  border-radius: 12px;
+  padding: 0.65rem 0.75rem;
+  background: rgba(255, 255, 255, 0.05);
+  color: var(--color-text);
+  cursor: pointer;
+  text-align: left;
+}
+.official-character small {
+  color: var(--color-text-secondary);
 }
 .webdav-title { font-weight: 700; margin-bottom: 0.55rem; }
 .webdav-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0.55rem; }

@@ -1,6 +1,6 @@
 ﻿import { createCharacter, fetchCharacterProfile, updateCharacterSave } from '@/services/api/characters';
 import { verifyStoredToken } from '@/services/api/auth';
-import { isBackendConfigured } from '@/services/backendConfig';
+import { buildBackendUrl, isBackendConfigured } from '@/services/backendConfig';
 import type { CharacterBaseInfo, CharacterProfile, SaveData, SaveSlot } from '@/types/game';
 
 export const OFFICIAL_ONLINE_SLOT = '云端修行';
@@ -23,6 +23,14 @@ export type CloudSyncStatus = {
   remoteVersion: number | null;
   localLastSync: string | null;
   remoteLastSync: string | null;
+};
+
+export type OfficialCloudCharacterListItem = {
+  charId: string;
+  name: string;
+  version: number | null;
+  lastSync: string | null;
+  raw: Record<string, unknown>;
 };
 
 const isRecord = (value: unknown): value is Record<string, unknown> => !!value && typeof value === 'object';
@@ -49,6 +57,49 @@ const getGameTimeFromSave = (saveData: SaveData): string | undefined => {
     return `${year}年${month}月${day}日`;
   }
   return undefined;
+};
+
+const getAuthHeaders = (): Headers => {
+  const headers = new Headers();
+  const token = localStorage.getItem('access_token');
+  if (token) headers.append('Authorization', `Bearer ${token}`);
+  return headers;
+};
+
+const pickArrayPayload = (payload: unknown): unknown[] => {
+  if (Array.isArray(payload)) return payload;
+  if (!isRecord(payload)) return [];
+  for (const key of ['items', 'characters', 'data', 'results']) {
+    const value = payload[key];
+    if (Array.isArray(value)) return value;
+  }
+  return [];
+};
+
+const normalizeListItem = (item: unknown): OfficialCloudCharacterListItem | null => {
+  if (!isRecord(item)) return null;
+  const charId =
+    asString(item.char_id) ??
+    asString(item.charId) ??
+    asString(item.id) ??
+    asString(item.character_id) ??
+    asString(item.characterId);
+  if (!charId) return null;
+
+  const baseInfo = isRecord(item.base_info) ? item.base_info : {};
+  const gameSave = isRecord(item.game_save) ? item.game_save : {};
+  return {
+    charId,
+    name:
+      asString(item.name) ??
+      asString(item.character_name) ??
+      asString(baseInfo.名字) ??
+      asString(baseInfo.name) ??
+      charId,
+    version: typeof gameSave.version === 'number' ? gameSave.version : null,
+    lastSync: asString(gameSave.last_sync) ?? asString(item.updated_at) ?? asString(item.created_at) ?? null,
+    raw: item,
+  };
 };
 
 export const extractOfficialCloudSave = (profile: unknown): OfficialCloudSave | null => {
@@ -85,6 +136,44 @@ export const officialBackendCloudProvider = {
     if (!ready.ok) throw new Error(ready.reason || '作者后端不可用');
     const profile = await fetchCharacterProfile(charId);
     return extractOfficialCloudSave(profile);
+  },
+
+  async listCharacters(): Promise<{ supported: boolean; characters: OfficialCloudCharacterListItem[]; message?: string }> {
+    const ready = await this.ensureReady();
+    if (!ready.ok) throw new Error(ready.reason || '作者后端不可用');
+
+    const candidates = [
+      '/api/v1/characters/',
+      '/api/v1/characters',
+      '/api/v1/characters/me',
+      '/api/v1/auth/me/characters',
+    ];
+
+    for (const path of candidates) {
+      try {
+        const response = await fetch(buildBackendUrl(path), {
+          method: 'GET',
+          headers: getAuthHeaders(),
+        });
+        if (response.status === 404 || response.status === 405) continue;
+        const rawText = await response.text();
+        if (!response.ok) {
+          if (response.status === 401) throw new Error('登录已失效或未登录，请先登录后再试。');
+          continue;
+        }
+        const payload = rawText ? JSON.parse(rawText) as unknown : null;
+        const characters = pickArrayPayload(payload).map(normalizeListItem).filter(Boolean) as OfficialCloudCharacterListItem[];
+        return { supported: true, characters };
+      } catch (error) {
+        if (error instanceof Error && error.message.includes('登录')) throw error;
+      }
+    }
+
+    return {
+      supported: false,
+      characters: [],
+      message: '作者后端当前没有开放账号角色列表接口，仍需使用本地/WebDAV 索引或手动输入角色 ID。',
+    };
   },
 
   async uploadSave(charId: string, payload: { saveData: SaveData | null; worldMap?: Record<string, unknown>; gameTime?: string | null; }): Promise<{ version: number; lastSync: string }> {
