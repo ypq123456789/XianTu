@@ -2,6 +2,7 @@
   <div class="save-panel">
     <!-- 存档容器 -->
     <div class="saves-container">
+      <CloudSaveManager />
       <!-- 当前存档状态 -->
       <div class="current-save-section" v-if="currentSave">
         <div class="section-header">
@@ -320,6 +321,7 @@ import { createDadBundle, unwrapDadBundle } from '@/utils/dadBundle';
 import { isSaveDataV3, migrateSaveDataToLatest } from '@/utils/saveMigration';
 import { validateSaveDataV3 } from '@/utils/saveValidationV3';
 import { repairSaveData } from '@/utils/dataRepair';
+import CloudSaveManager from '@/components/common/CloudSaveManager.vue';
 
 const { t } = useI18n();
 

@@ -14,7 +14,9 @@ import * as storage from '@/utils/indexedDBManager';
 import { getTavernHelper, clearAllCharacterData, isTavernEnv } from '@/utils/tavern';
 import { ensureSaveDataHasTavernNsfw } from '@/utils/nsfw';
 import { initializeCharacter } from '@/services/characterInitialization';
-import { createCharacter as createCharacterAPI, fetchCharacterProfile, updateCharacterSave, verifyStoredToken } from '@/services/request';
+import { createCharacter as createCharacterAPI, verifyStoredToken } from '@/services/request';
+import { officialBackendCloudProvider, OFFICIAL_ONLINE_SLOT, type CloudSyncStatus } from '@/services/officialBackendCloudProvider';
+import { getOfficialCloudStatus, restoreOfficialCharacterById, upsertCloudIndexFromProfile } from '@/services/storageAdapter';
 import { isBackendConfigured } from '@/services/backendConfig';
 import { validateGameData } from '@/utils/dataValidation';
 import { getAIDataRepairSystemPrompt } from '@/utils/prompts/tasks/dataRepairPrompts';
@@ -577,10 +579,77 @@ export const useCharacterStore = defineStore('characterV3', () => {
    * @todo 需要实现后端API
    */
   const syncRootStateToCloud = async (): Promise<void> => {
-    debug.log('角色商店', 'syncRootStateToCloud called. (Placeholder - no backend implementation yet)');
-    // 在这里实现将 rootState.value 同步到后端的逻辑
-    // 例如: await cloudApi.saveRootState(rootState.value);
+    Object.entries(rootState.value.角色列表).forEach(([charId, profile]) => {
+      upsertCloudIndexFromProfile(charId, profile);
+    });
     return Promise.resolve();
+  };
+
+  const applyOfficialCloudSaveToProfile = async (charId: string, profile: CharacterProfile): Promise<boolean> => {
+    const cloud = await officialBackendCloudProvider.downloadSave(charId);
+    if (!cloud) return false;
+
+    if (!profile.存档列表) profile.存档列表 = {};
+    const slot = profile.存档列表[OFFICIAL_ONLINE_SLOT] || { 存档名: OFFICIAL_ONLINE_SLOT } as SaveSlot;
+    slot.存档名 = OFFICIAL_ONLINE_SLOT;
+    slot.存档数据 = cloud.saveData;
+    slot.保存时间 = cloud.lastSync;
+    slot.游戏内时间 = cloud.gameTime || slot.游戏内时间 || '';
+    slot.云端同步信息 = {
+      最后同步: cloud.lastSync,
+      版本: cloud.version,
+      需要同步: false,
+      后端创建失败: false,
+    };
+    (slot as any).世界地图 = cloud.worldMap;
+    profile.存档列表[OFFICIAL_ONLINE_SLOT] = slot;
+
+    await storage.saveSaveData(charId, OFFICIAL_ONLINE_SLOT, cloud.saveData);
+    upsertCloudIndexFromProfile(charId, profile);
+    await commitMetadataToStorage();
+    return true;
+  };
+
+  const restoreOfficialCloudCharacter = async (charId: string): Promise<boolean> => {
+    const id = charId.trim();
+    if (!id) {
+      toast.warning('请输入角色 ID');
+      return false;
+    }
+
+    try {
+      const restored = await restoreOfficialCharacterById(id);
+      rootState.value.角色列表[id] = restored.profile;
+      rootState.value.当前激活存档 = { 角色ID: id, 存档槽位: OFFICIAL_ONLINE_SLOT };
+      await storage.saveSaveData(id, OFFICIAL_ONLINE_SLOT, restored.saveData);
+      upsertCloudIndexFromProfile(id, restored.profile);
+      await commitMetadataToStorage();
+      toast.success(`已从作者后端恢复联机角色：${restored.profile.角色?.名字 || id}`);
+      return true;
+    } catch (error) {
+      debug.error('角色商店', '从作者后端恢复联机角色失败', error);
+      toast.error(`恢复失败：${error instanceof Error ? error.message : '未知错误'}`);
+      return false;
+    }
+  };
+
+  const refreshActiveCloudSyncStatus = async (): Promise<CloudSyncStatus | null> => {
+    const active = rootState.value.当前激活存档;
+    const profile = activeCharacterProfile.value;
+    if (!active || !profile || profile.模式 !== '联机') return null;
+    try {
+      return await getOfficialCloudStatus(active.角色ID, profile);
+    } catch (error) {
+      const slot = getOnlineSaveSlot(profile);
+      return {
+        state: 'error',
+        message: error instanceof Error ? error.message : '检查云端状态失败',
+        localVersion: slot?.云端同步信息?.版本 ?? 0,
+        remoteVersion: null,
+        localLastSync: slot?.云端同步信息?.最后同步 ?? null,
+        remoteLastSync: null,
+      };
+    }
   };
 
   /**
@@ -762,7 +831,11 @@ export const useCharacterStore = defineStore('characterV3', () => {
           };
 
           debug.log('角色商店', '准备同步到云端的初始存档数据', saveDataToSync);
-          await updateCharacterSave(charId, saveDataToSync);
+          await officialBackendCloudProvider.uploadSave(charId, {
+            saveData: saveDataForCloud,
+            worldMap: {},
+            gameTime: '修仙元年 春',
+          });
           uiStore.updateLoadingText('初始存档已成功同步到云端！');
         } catch (error) {
           debug.warn('角色商店', '同步初始存档数据到云端失败', error);
@@ -851,7 +924,11 @@ export const useCharacterStore = defineStore('characterV3', () => {
       debug.log('角色商店', `开始加载游戏，角色ID: ${charId}, 存档槽: ${slotKey}`);
       const uiStore = useUIStore();
 
-      const profile = rootState.value.角色列表[charId];
+      let profile = rootState.value.角色列表[charId];
+      if (!profile && slotKey === OFFICIAL_ONLINE_SLOT) {
+        const restored = await restoreOfficialCloudCharacter(charId);
+        if (restored) profile = rootState.value.角色列表[charId];
+      }
       if (!profile) {
         debug.error('角色商店', '找不到要加载的角色', charId);
         toast.error('找不到要加载的角色！');
@@ -887,33 +964,9 @@ export const useCharacterStore = defineStore('characterV3', () => {
           return false;
         } else {
           try {
-            const cloudProfile = await fetchCharacterProfile(charId) as any;
-            const cloudSave = cloudProfile?.game_save;
-            const cloudSaveData = cloudSave?.save_data;
-
-            if (cloudSaveData) {
-              targetSlot.存档数据 = cloudSaveData as SaveData;
-
-              if (cloudSave?.game_time && typeof cloudSave.game_time === 'string') {
-                targetSlot.游戏内时间 = cloudSave.game_time;
-              }
-              if (cloudSave?.world_map && typeof cloudSave.world_map === 'object') {
-                (targetSlot as any).世界地图 = cloudSave.world_map;
-              }
-
-              await storage.saveSaveData(charId, slotKey, targetSlot.存档数据);
-
-              const currentOnlineSlot = getOnlineSaveSlot(profile);
-              if (currentOnlineSlot) {
-                currentOnlineSlot.云端同步信息 = {
-                  最后同步: cloudSave?.last_sync ? String(cloudSave.last_sync) : new Date().toISOString(),
-                  版本: typeof cloudSave?.version === 'number' ? cloudSave.version : (currentOnlineSlot.云端同步信息?.版本 ?? 1),
-                  需要同步: false,
-                  后端创建失败: false,
-                };
-                await commitMetadataToStorage();
-              }
-
+            const pulled = await applyOfficialCloudSaveToProfile(charId, profile);
+            if (pulled) {
+              targetSlot = getOnlineSaveSlot(profile);
               debug.log('角色商店', '联机存档已从云端拉取并缓存到本地');
             }
           } catch (error) {
@@ -922,6 +975,12 @@ export const useCharacterStore = defineStore('characterV3', () => {
         }
       } else if (profile.模式 === '联机' && backendCreationFailed) {
         debug.warn('角色商店', '检测到后端创建失败标记，跳过云端获取，使用本地缓存');
+      }
+
+      if (!targetSlot) {
+        debug.error('角色商店', '云端恢复后仍找不到指定的存档槽位', slotKey);
+        toast.error('找不到指定的存档槽位！');
+        return false;
       }
 
       // 🔥 [关键修复] 如果存档数据不在内存中，先从 IndexedDB 加载
@@ -1487,10 +1546,10 @@ export const useCharacterStore = defineStore('characterV3', () => {
 
           // 🔥 过滤叙事信息，减少数据量
           const saveDataForCloud = filterSaveDataForCloud(currentSaveData);
-          const result = await updateCharacterSave(active.角色ID, {
-            save_data: saveDataForCloud,
-            world_map: worldMapToSync,
-            game_time: gameTimeToSync
+          const result = await officialBackendCloudProvider.uploadSave(active.角色ID, {
+            saveData: saveDataForCloud,
+            worldMap: worldMapToSync,
+            gameTime: gameTimeToSync,
           });
 
           const syncOnlineSlot = getOnlineSaveSlot(profile);
@@ -2726,20 +2785,8 @@ const loadSaveData = async (characterId: string, saveSlot: string): Promise<Save
             const tokenValid = await verifyStoredToken();
             if (tokenValid) {
               try {
-                const cloudProfile = await fetchCharacterProfile(charId) as any;
-                const cloudSave = cloudProfile?.game_save;
-                const cloudSaveData = cloudSave?.save_data;
-
-                if (cloudSaveData) {
-                  存档.存档数据 = cloudSaveData as SaveData;
-                  if (cloudSave?.game_time && typeof cloudSave.game_time === 'string') {
-                    存档.游戏内时间 = cloudSave.game_time;
-                  }
-                  存档.云端同步信息 = {
-                    最后同步: cloudSave?.last_sync ? String(cloudSave.last_sync) : new Date().toISOString(),
-                    版本: typeof cloudSave?.version === 'number' ? cloudSave.version : 1,
-                    需要同步: false,
-                  };
+                const pulled = await applyOfficialCloudSaveToProfile(charId, profile);
+                if (pulled) {
                   loadedCount++;
                   debug.log('角色商店', `  > 成功从云端加载联机存档`);
                 }
@@ -2902,5 +2949,7 @@ return {
   importCharacter, // 新增：导入角色
   loadSaveData,
   loadCharacterSaves, // 新增：按需加载存档
+  restoreOfficialCloudCharacter,
+  refreshActiveCloudSyncStatus,
 };
 });

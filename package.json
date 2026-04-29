@@ -23,6 +23,7 @@
     "type-check": "tsc --noEmit"
   },
   "dependencies": {
+    "@pixi/mesh": "^7.4.3",
     "@vueuse/core": "^14.1.0",
     "axios": "^1.11.0",
     "chart.js": "^4.5.1",

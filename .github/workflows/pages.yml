@@ -1,7 +1,9 @@
-name: Deploy GitHub Pages
+﻿name: Deploy GitHub Pages
 
 on:
   push:
+    branches:
+      - master
     tags:
       - 'v*'
   workflow_dispatch:
@@ -21,8 +23,6 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-        with:
-          ref: ${{ github.ref_name }}
 
       - name: Setup Node
         uses: actions/setup-node@v4
@@ -40,6 +40,9 @@ jobs:
         run: |
           if [ -f "游戏介绍.html" ]; then
             cp "游戏介绍.html" "dist/游戏介绍.html"
+          fi
+          if [ -f "娓告垙浠嬬粛.html" ]; then
+            cp "娓告垙浠嬬粛.html" "dist/娓告垙浠嬬粛.html"
           fi
 
       - name: Disable Jekyll

@@ -49,6 +49,7 @@
         @imported="handleLegacyImported"
         @character-created="handleLegacyCharacterCreated"
       />
+      <CloudSaveManager />
       <!-- 返回按钮 - 仅在全屏模式显示 -->
       <div v-if="isFullscreen" class="fullscreen-header">
         <button @click="handleClose" class="fullscreen-back-btn">
@@ -560,6 +561,7 @@ import HexagonChart from '@/components/common/HexagonChart.vue';
 import VideoBackground from '@/components/common/VideoBackground.vue';
 import { ArrowLeft, Upload, History, Clock, Star, Wrench } from 'lucide-vue-next';
 import LegacySaveMigrationModal from './LegacySaveMigrationModal.vue';
+import CloudSaveManager from '@/components/common/CloudSaveManager.vue';
 import type { CharacterProfile, SaveSlot } from '@/types/game';
 import "@/style.css";
 import { formatRealmWithStage } from '@/utils/realmUtils';
